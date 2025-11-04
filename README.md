@@ -8,10 +8,10 @@ Thanks for the scripts.
 
 Thanks,
 
-Landon Byrge / KaliPatriot
+## Landon Byrge / KaliPatriot
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
 V2. Thank you to the makers of these scripts ^ 
 
-Behnjamin Barlow / N1ghtWalk3r
-Landon Foister / 7oister150
+## Behnjamin Barlow / N1ghtWalk3r 
+## Landon Foister / 7oister150
 
