@@ -1,11 +1,12 @@
 Dear Red Team,
 
-If you have not already, please connect with me on linkedin: https://www.linkedin.com/in/landonbyrge. Please go easy on us, its our first year :(
+If you have not already, please connect with us on linkedin: www.linkedin.com/in/bhbarlow & https://www.linkedin.com/in/landon-foister-6aa67b329. Please go easy on us we don't know what we are doing. 
 
-Dear Nigerald,
+Dear Nigerald and KaliPatriot,
 
-Thanks for the scripts.
+Thank you both for the scripts.
 
-Thanks,
+Best,
 
-Landon Byrge / KaliPatriot
+Behnjamin Barlow / n1ghtwa1k3r
+Landon Foister / fositer150
