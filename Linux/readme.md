@@ -8,5 +8,4 @@ Thank you both for the scripts.
 
 Best,
 
-Behnjamin Barlow / n1ghtwa1k3r
-Landon Foister / fositer150
+Behnjamin Barlow / n1ghtwa1k3r  ||  Landon Foister / fositer150
