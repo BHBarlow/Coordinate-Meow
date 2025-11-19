@@ -1,4 +1,4 @@
-## Unknown / Nigerald 
+## Dylan Tran / Nigerald 
 ## Landon Byrge / KaliPatriot
 ---
 V2. Thank you to the makers of these scripts ^ 
