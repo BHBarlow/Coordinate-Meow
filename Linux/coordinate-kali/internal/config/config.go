@@ -14,7 +14,6 @@ type ConfigEntry struct {
 	Password string
 }
 
-
 var ConfigEntries = []ConfigEntry{}
 
 func ReadConfig() error {
@@ -73,7 +72,7 @@ func DeleteEntryByIP(ip string) {
 
 func SaveConfig() error {
 	ConfigFilePath := "config.json"
-	
+
 	logger.Debug("Attempting to save configuration file...")
 
 	data, err := json.MarshalIndent(ConfigEntries, "", "  ")

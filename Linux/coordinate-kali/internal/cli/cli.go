@@ -24,6 +24,7 @@ func Init() {
 	ShortTimeout = time.Duration(*Timelimit * 40 * int(time.Millisecond))
 	
 	Scripts = flag.Args()
+	Commands = *Command
 
 	if *TmpDir != "" {
 		if _, err := os.Stat(*TmpDir); os.IsNotExist(err) {
@@ -42,8 +43,13 @@ func Init() {
 }
 
 func InputCheck() error {
-	if (len(Scripts) == 0 && *CreateConfig == "") || ((*Usernames == "" || *Targets == "") && !*UseConfig) {
-		return fmt.Errorf("Missing target(s), script(s), and/or username(s).")
+	if (len(Scripts) == 0 && len(Commands) == 0 && *CreateConfig == "") || ((*Usernames == "" || *Targets == "") && !*UseConfig) {
+		return fmt.Errorf("Missing target(s), script(s)/command(s), and/or username(s).")
+	}
+
+	// Ensure scripts and commands are mutually exclusive
+	if len(Scripts) > 0 && len(Commands) > 0 {
+		return fmt.Errorf("Cannot specify both scripts and commands. Use either scripts or --command flag.")
 	}
 
 	if *CreateConfig != "" {
@@ -52,6 +58,7 @@ func InputCheck() error {
 			*Environment += fmt.Sprintf(";IGNOREUSERS=%s", *IgnoreUsers)
 		}
 		Scripts = nil
+		Commands = nil
 		Scripts = append(Scripts, "scripts/misc/password.sh")
 	}
 

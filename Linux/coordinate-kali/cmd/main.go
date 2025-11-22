@@ -120,7 +120,12 @@ func prepareManualDeploy() {
 	logger.Debug(fmt.Sprintf("Parsed %d IP addresses.", len(Addresses)))
 	if !*QuietOut {
 		fmt.Printf("Specified targets (%d addresses):\n\t%s\n", len(Addresses), strings.Join(StringAddresses, "\n\t"))
-		fmt.Printf("Specified scripts (%d files):\n\t%s\n", len(Scripts), strings.Join(Scripts, "\n\t"))
+		if len(Scripts) > 0 {
+			fmt.Printf("Specified scripts (%d files):\n\t%s\n", len(Scripts), strings.Join(Scripts, "\n\t"))
+		}
+		if len(Commands) > 0 {
+			fmt.Printf("Specified commands (%d commands):\n\t%s\n", len(Commands), strings.Join(Commands, "\n\t"))
+		}
 		if len(EnvironCmds) != 0 {
 			fmt.Printf("Specified environmental commands (%d items):\n\t%s\n", len(EnvironCmds), strings.Join(EnvironCmds, "\n\t"))
 		}

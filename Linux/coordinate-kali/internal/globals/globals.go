@@ -48,9 +48,11 @@ var (
 	CreateConfig    = flag.StringP("create-config", "C", "", "Create a json config for auth. ONLY COMPATIBLE WITH password.sh. This has no error handling. Have fun.")
 	IgnoreUsers	    = flag.StringP("ignore-users", "I", "", "Ignore users")
 	UseConfig       = flag.BoolP("use-config", "U", false, "Use config.json. This has no error handling. Have fun.")
+	Command         = flag.StringArrayP("command", "x", []string{}, "Execute command(s) directly instead of scripts")
 	PrivKey         = ""
 	CallbackIPs     = []string{}
 	Scripts         = []string{}
+	Commands        = []string{}
 	UsernameList    = []string{}
 	PasswordList    = []string{}
 	EnvironCmds     = []string{}

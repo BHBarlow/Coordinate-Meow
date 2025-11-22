@@ -25,6 +25,30 @@ func SsherWrapper(i Instance, client *goph.Client) {
 	logger.Debug(fmt.Sprintf("Starting SsherWrapper for instance: %+v", i))
 	var wg sync.WaitGroup
 
+	// Handle direct commands if specified
+	if len(Commands) > 0 {
+		logger.Debug("Executing direct commands instead of scripts")
+		for _, command := range Commands {
+			logger.Debug(fmt.Sprintf("Processing command: %s", command))
+			i.Script = fmt.Sprintf("command: %s", command) // For logging purposes
+			
+			// Build full command with environment variables
+			var fullCommand string
+			for _, cmd := range EnvironCmds {
+				fullCommand += fmt.Sprintf("%s ", cmd)
+			}
+			fullCommand += command
+			
+			wg.Add(1)
+			go ssherCommand(i, client, fullCommand, &wg)
+			i.ID++
+		}
+		wg.Wait()
+		logger.Debug("Finished executing all commands in SsherWrapper.")
+		return
+	}
+
+	// Handle scripts (existing logic)
 	first := true
 	for _, path := range Scripts {
 		logger.Debug(fmt.Sprintf("Processing script path: %s", path))
@@ -54,6 +78,105 @@ func SsherWrapper(i Instance, client *goph.Client) {
 
 	wg.Wait()
 	logger.Debug("Finished executing all threads in SsherWrapper.")
+}
+
+func ssherCommand(i Instance, client *goph.Client, command string, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	logger.Debug(fmt.Sprintf("Starting ssherCommand for instance: %+v with command: %s", i, command))
+
+	// Test SSH connection validity
+	output, err := client.Run("echo a ; asdfhasdf")
+	if len(output) == 0 {
+		logger.Err(fmt.Sprintf("%s: Couldn't read stdout. Coordinate does not work with this host's shell probably\n", i.IP))
+		BrokenHosts = append(BrokenHosts, i.IP)
+		return
+	}
+
+	elevated := true
+	if i.Username != "root" {
+		elevated = false
+		logger.Debug(fmt.Sprintf("User '%s' is not root.", i.Username))
+		if *Sudo {
+			logger.Debug("Sudo is enabled. Attempting privilege escalation.")
+			if escalateSudo(i, client) {
+				elevated = true
+				logger.InfoExtra(i, "Privilege escalation succeeded.")
+			} else {
+				logger.InfoExtra(i, "Privilege escalation failed.")
+			}
+		} else {
+			logger.InfoExtra(i, "Not root, not sudoing. Proceeding with user.")
+		}
+	}
+
+	// Get hostname for logging
+	name := "hostname"
+	output, err = client.Run(name)
+	if err != nil {
+		logger.Debug("Hostname command failed, attempting 'cat /etc/hostname'")
+		name = "cat /etc/hostname"
+		output, err = client.Run(name)
+	}
+	stroutput := string(output)
+	if !strings.Contains(stroutput, "No such file or directory") {
+		i.Hostname = strings.TrimSpace(stroutput)
+		logger.Debug(fmt.Sprintf("Resolved hostname: %s", i.Hostname))
+	} else {
+		i.Hostname = i.IP
+		logger.Debug("No hostname found.")
+	}
+
+	// Update output file path with placeholders
+	i.Outfile = strings.Replace(i.Outfile, "%i%", i.IP, -1)
+	i.Outfile = strings.Replace(i.Outfile, "%h%", i.Hostname, -1)
+	i.Outfile = strings.Replace(i.Outfile, "%s%", "command", -1) // Use "command" as script name replacement
+
+	logger.Debug(fmt.Sprintf("Resolved output file path: %s", i.Outfile))
+
+	// Execute command with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
+	defer cancel()
+
+	var execCommand string
+	if elevated || !*Sudo {
+		execCommand = command
+	} else {
+		execCommand = fmt.Sprintf("echo \"%s\" | sudo -S bash -c '%s'", i.Password, command)
+	}
+	logger.Debug(fmt.Sprintf("Executing command: %s", execCommand))
+
+	output, err = client.RunContext(ctx, execCommand)
+	stroutput = string(output)
+
+	if err != nil {
+		if strings.Contains(err.Error(), "context deadline exceeded") {
+			if len(i.Hostname) > 0 {
+				AnnoyingErrs = append(AnnoyingErrs, fmt.Sprintf("Command timed out on %s", i.Hostname))
+			} else {
+				AnnoyingErrs = append(AnnoyingErrs, fmt.Sprintf("Command timed out on %s", i.IP))
+			}
+		} else {
+			logger.Err(fmt.Sprintf("%s: Error running command: %s\n", i.IP, err))
+		}
+	}
+	
+	if len(stroutput) > 0 {
+		logger.Stdout(i, stroutput)
+		if *CreateConfig != "" {
+			for _, line := range strings.Split(stroutput, "\n") {
+				parts := strings.Split(line, ",")
+				if len(parts) < 2 || parts[0] != "root" {
+					continue
+				}
+				Password := parts[1]
+				UpdateEntry(ConfigEntry{IP: i.IP, Username: "root", Password: Password})
+			}
+		}
+	}
+
+	TotalRuns++
+	logger.Debug(fmt.Sprintf("Total runs incremented: %d", TotalRuns))
 }
 
 func ssher(i Instance, client *goph.Client, script string, wg *sync.WaitGroup) {

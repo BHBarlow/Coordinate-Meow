@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/LByrgeCP/coordinate-kali/internal/logger"
 	. "github.com/LByrgeCP/coordinate-kali/internal/globals"
+	"github.com/LByrgeCP/coordinate-kali/internal/logger"
 )
 
 func ReadEnv() {
