@@ -39,6 +39,10 @@ func attemptSSH(ip, outfile, username, password string) bool {
 	}
 
 	client, err := goph.NewUnknown(i.Username, i.IP, goph.KeyboardInteractive(i.Password))
+	if err != nil {
+		logger.Debug(fmt.Sprintf("KeyboardInteractive auth failed for %s, trying standard Password auth...", i.IP))
+		client, err = goph.NewUnknown(i.Username, i.IP, goph.Password(i.Password))
+	}
 	return handleSSHConnection(i, client, err)
 }
 
