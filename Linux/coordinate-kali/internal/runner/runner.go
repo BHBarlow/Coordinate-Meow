@@ -24,7 +24,7 @@ func handleSSHConnection(i Instance, client *goph.Client, err error) bool {
 }
 
 func attemptSSH(ip, outfile, username, password string) bool {
-	logger.Debug(fmt.Sprintf("Starting attemptSSH with IP: %s, username: %s", ip, username))
+	logger.Debug(fmt.Sprintf("Starting attemptSSH with IP: %s, username: [%s], password: [%s]", ip, username, password))
 
 	i := Instance{
 		IP:       ip,
@@ -38,10 +38,12 @@ func attemptSSH(ip, outfile, username, password string) bool {
 		return false
 	}
 
-	client, err := goph.NewUnknown(i.Username, i.IP, goph.KeyboardInteractive(i.Password))
+	// Try standard Password authentication first
+	client, err := goph.NewUnknown(i.Username, i.IP, goph.Password(i.Password))
 	if err != nil {
-		logger.Debug(fmt.Sprintf("KeyboardInteractive auth failed for %s, trying standard Password auth...", i.IP))
-		client, err = goph.NewUnknown(i.Username, i.IP, goph.Password(i.Password))
+		logger.Debug(fmt.Sprintf("Password auth failed for %s, trying KeyboardInteractive...", i.IP))
+		// Fallback to KeyboardInteractive
+		client, err = goph.NewUnknown(i.Username, i.IP, goph.KeyboardInteractive(i.Password))
 	}
 	return handleSSHConnection(i, client, err)
 }
