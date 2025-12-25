@@ -1,6 +1,6 @@
 #!/bin/bash
 # KaliPatriot | TTU CCDC | Landon Byrge
-# Enhanced by NightWalk3r | Behnjamin Barlow
+# NightWalk3r | TTU CCDC | Behnjamin Barlow
 
 # Color codes for output
 RED='\033[0;31m'
