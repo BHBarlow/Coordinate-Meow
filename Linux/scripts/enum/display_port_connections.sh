@@ -1,5 +1,11 @@
 #!/bin/sh
 # KaliPatriot | TTU CCDC | Landon Byrge
+
+# Colors
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
 if command -v sockstat >/dev/null ; then
     LIST_CMD="sockstat -l"
     ESTB_CMD="sockstat -46c"
@@ -16,8 +22,11 @@ if [ -z "$LIST_CMD" ]; then
     exit 1
 fi
 
-echo "[+] Listening"
+echo "${GREEN}[+] Listening Connections${NC}"
+echo "${CYAN}========================================${NC}"
 $LIST_CMD
 
-echo "[+] Established"
+echo ""
+echo "${GREEN}[+] Established Connections${NC}"
+echo "${CYAN}========================================${NC}"
 $ESTB_CMD
