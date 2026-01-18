@@ -57,6 +57,9 @@ func InputCheck() error {
 		if *IgnoreUsers != "" {
 			*Environment += fmt.Sprintf(";IGNOREUSERS=%s", *IgnoreUsers)
 		}
+		if *AllPass != "" {
+			*Environment += fmt.Sprintf(";ALLPASS=%s", *AllPass)
+		}
 		Scripts = nil
 		Commands = nil
 		Scripts = append(Scripts, "scripts/misc/password.sh")

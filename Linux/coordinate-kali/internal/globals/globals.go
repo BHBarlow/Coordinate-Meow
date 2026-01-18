@@ -47,6 +47,7 @@ var (
 	NoValidate      = flag.BoolP("no-validate", "n", false, "Don't ensure shell is valid, or that scripts have finished running")
 	CreateConfig    = flag.StringP("create-config", "C", "", "Create a json config for auth. ONLY COMPATIBLE WITH password.sh. This has no error handling. Have fun.")
 	IgnoreUsers	    = flag.StringP("ignore-users", "I", "", "Ignore users")
+	AllPass         = flag.StringP("all-pass", "A", "", "Set the same password for all users (except root and ignored users)")
 	UseConfig       = flag.BoolP("use-config", "U", false, "Use config.json. This has no error handling. Have fun.")
 	Command         = flag.StringArrayP("command", "x", []string{}, "Execute command(s) directly instead of scripts")
 	PrivKey         = ""

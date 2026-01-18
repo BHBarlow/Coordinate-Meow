@@ -35,7 +35,13 @@ CHANGEPASSWORD() {
 echo "username,password"
 
 for user in $(cat /etc/passwd | grep -E "/bin/.*sh" | cut -f1 -d':'); do
-    pass=$(cat /dev/urandom | tr -dc '[:alpha:][:digit:]' | fold -w ${1:-20} | head -n 1)
+    # Generate random password only if ALLPASS is not set
+    if [ -z "$ALLPASS" ]; then
+        pass=$(cat /dev/urandom | tr -dc '[:alpha:][:digit:]' | fold -w ${1:-20} | head -n 1)
+    else
+        pass="$ALLPASS"
+    fi
+    
     if [ "$ROOTPASS" = "YOLO" ]; then
         ROOTPASS=$(cat /dev/urandom | tr -dc '[:alpha:][:digit:]' | fold -w ${1:-20} | head -n 1)
     fi
