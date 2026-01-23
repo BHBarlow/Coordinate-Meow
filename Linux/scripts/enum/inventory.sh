@@ -33,6 +33,8 @@ else
     }
 fi
 
+
+
 RHEL(){
   IS_RHEL=true
 }
@@ -95,6 +97,46 @@ if [ -n "$COLOR" ]; then
     NC='\033[0m'
 fi
 
+check_domain(){
+    # Check standard AD join methods
+    if command -v realm >/dev/null 2>&1; then
+        R_DOMAIN=$(realm list 2>/dev/null | grep 'domain-name:' | awk '{print $2}')
+        if [ -n "$R_DOMAIN" ]; then
+            echo "Joined to Realm: $R_DOMAIN"
+            return
+        fi
+    fi
+
+    if command -v wbinfo >/dev/null 2>&1; then
+        W_DOMAIN=$(wbinfo --own-domain 2>/dev/null)
+        if [ -n "$W_DOMAIN" ]; then
+            echo "Joined to Winbind Domain: $W_DOMAIN"
+            return
+        fi
+    fi
+    
+    # Check for PBIS/PowerBroker
+    if [ -f /opt/pbis/bin/config ]; then
+         P_DOMAIN=$(/opt/pbis/bin/config Domain 2>/dev/null)
+         if [ -n "$P_DOMAIN" ]; then
+             echo "Joined to PBIS Domain: $P_DOMAIN"
+             return
+         fi
+    fi
+
+    # Hints of domain via DNS/Hostname
+    DNS_DOMAIN=$(hostname -d 2>/dev/null)
+    if [ -z "$DNS_DOMAIN" ] && [ -f /etc/resolv.conf ]; then
+        DNS_DOMAIN=$(grep '^domain' /etc/resolv.conf | awk '{print $2}' | head -n1)
+    fi
+    
+    if [ -n "$DNS_DOMAIN" ]; then
+        echo "DNS Domain: $DNS_DOMAIN (Join Status Unknown)"
+    else
+        echo "No Domain Detected"
+    fi
+}
+
 ${ECHO} "${GREEN}
 ##################################
 #                                #
@@ -106,6 +148,7 @@ ${NC}\n"
 ${ECHO} "\n${GREEN}#############HOST INFORMATION############${NC}\n"
 
 HOST=$( DPRINT hostname || DPRINT cat /etc/hostname )
+DOMAIN=$(check_domain)
 OS=$( cat /etc/*-release  | grep PRETTY_NAME | sed 's/PRETTY_NAME=//' | sed 's/"//g' )
 if command -v 'ip' > /dev/null ; then
     IP=$( DPRINT ip a | grep -oE '([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}/[[:digit:]]{1,2}' | grep -v '127.0.0.1' )
@@ -139,6 +182,7 @@ WORLDWRITEABLES=$( DPRINT find /usr /bin/ /sbin /var/www /lib -perm -o=w -type f
 SUDOGROUP_LINES=$(grep -E "^(sudo|wheel|root):" /etc/group | sed 's/x:.*:/ /')
 
 ${ECHO} "${BLUE}[+] Hostname:${NC} $HOST"
+${ECHO} "${BLUE}[+] Domain:${NC} $DOMAIN"
 ${ECHO} "${BLUE}[+] OS:${NC} $OS"
 ${ECHO} "${BLUE}[+] RAM:${NC} $RAM"
 ${ECHO} "${BLUE}[+] Storage:${NC} $STORAGE"
@@ -471,7 +515,7 @@ fi
 
 # Process Information
 ${ECHO} "\n${GREEN}#############PROCESS INFORMATION############${NC}\n"
-PROCESS=$(ps -ef --forest || ps auxw || ps -ef)
+PROCESS=$( (ps -ef --forest || ps auxw || ps -ef) | tail -n 125)
 ${ECHO} "${YELLOW}$PROCESS${NC}\n"
 
 # Network Information
