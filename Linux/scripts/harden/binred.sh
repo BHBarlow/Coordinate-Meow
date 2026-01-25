@@ -7,9 +7,6 @@ echo "$1: command not found"
 echo "REDTRAP $(date +%H%M%S) -- $1" >> /var/log/commands
 fi; r1
 }
-
 trap "r1" SIGINT SIGISTP exit; r1
-exit"
-
 echo "$Script" > /bin/red
 chmod +x /bin/red
