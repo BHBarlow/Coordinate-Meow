@@ -10,19 +10,19 @@ if ! [ -z "$PATH" ]; then
 fi
 
 grep_for_phone_numbers() {
-    grep -RPo '(\([0-9]{3}\) |[0-9]{3}-)[0-9]{3}-[0-9]{4}' $1 2>/dev/null
+    grep -RPo '(\([0-9]{3}\) |[0-9]{3}-)[0-9]{3}-[0-9]{4}' $1 2>/dev/null | grep -iv 'mozilla'
 }
 
 grep_for_email_addresses() {
-    grep -RPo '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}' $1 2>/dev/null
+    grep -RPo '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,6}' $1 2>/dev/null | grep -iv 'mozilla'
 }
 
 grep_for_social_security_numbers() {
-    grep -RPo '[0-9]{3}-[0-9]{2}-[0-9]{4}' $1 2>/dev/null
+    grep -RPo '[0-9]{3}-[0-9]{2}-[0-9]{4}' $1 2>/dev/null | grep -iv 'mozilla'
 }
 
 grep_for_credit_card_numbers() {
-    grep -RPo '(?:\d{4}-?){3}\d{4}|(?:\d{4}\s?){3}\d{4}|(?:\d{4}){4}' $1 2>/dev/null
+    grep -RPo '(?:\d{4}-?){3}\d{4}|(?:\d{4}\s?){3}\d{4}|(?:\d{4}){4}' $1 2>/dev/null | grep -iv 'mozilla'
 }
 
 find_interesting_files_by_extension() {
@@ -47,8 +47,8 @@ echo "[+] Searching /home for PII."
 search /home
 
 # look in /var/www
-echo "[+] Searching /var/www for PII."
-search /var/www
+echo "[+] Searching /var/www/html for PII."
+search /var/www/html
 
 # if there is vsftpd installed, look in the anon_root and local_root directories
 check_vsftpd_config() {

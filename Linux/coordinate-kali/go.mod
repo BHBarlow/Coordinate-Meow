@@ -1,6 +1,6 @@
 module github.com/LByrgeCP/coordinate-kali
 
-go 1.21.13
+go 1.23
 
 require (
 	github.com/bramvdbogaerde/go-scp v1.5.0
