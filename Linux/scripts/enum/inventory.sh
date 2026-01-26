@@ -1,6 +1,7 @@
 #!/bin/sh
 # @d_tranman/Nigel Gerald/Nigerald
 # KaliPatriot | TTU CCDC | Landon Byrge
+# 7oister | TTU CCDC | Landon Foister
 
 IS_RHEL=false
 IS_DEBIAN=false
@@ -273,6 +274,98 @@ fi
 if checkService "$SERVICES"  'cockpit' | grep -qi "is on this machine"; then
     checkService "$SERVICES"  'cockpit'
     ${ECHO} "${ORAG}[!] WE PROBABLY SHOULD KILL COCKPIT${NC}"
+fi
+
+if checkService "$SERVICES" 'kubelet' 'kube-apiserver' | grep -qi "is on this machine" || \
+   checkService "$SERVICES" 'k3s' | grep -qi "is on this machine" || \
+   checkService "$SERVICES" 'k3s-server' | grep -qi "is on this machine" || \
+   checkService "$SERVICES" 'k3s-agent' | grep -qi "is on this machine"; then
+    
+    # Display whichever service was found
+    checkService "$SERVICES" 'kubelet' 'kube-apiserver' 2>/dev/null
+    checkService "$SERVICES" 'k3s' 2>/dev/null
+    checkService "$SERVICES" 'k3s-server' 2>/dev/null
+    checkService "$SERVICES" 'k3s-agent' 2>/dev/null
+    
+    K8S=true
+
+    # Check if kubectl is available
+    if command -v kubectl >/dev/null 2>&1; then
+        ${ECHO} "${BLUE}[+] kubectl is available${NC}\n"
+        
+        # Get cluster info
+        CLUSTERINFO=$( DPRINT kubectl cluster-info 2>/dev/null )
+        if [ -n "$CLUSTERINFO" ]; then
+            echo "Cluster Information"
+            ${ECHO} "${ORAG}$CLUSTERINFO${NC}\n"
+        fi
+        
+        # Get nodes
+        NODES=$( DPRINT kubectl get nodes -o wide 2>/dev/null )
+        if [ -n "$NODES" ]; then
+            echo "Kubernetes Nodes"
+            ${ECHO} "${ORAG}$NODES${NC}\n"
+        fi
+        
+        # Get all pods with IP addresses
+        PODS=$( DPRINT kubectl get pods --all-namespaces -o wide 2>/dev/null )
+        if [ -n "$PODS" ]; then
+            echo "Kubernetes Pods (All Namespaces)"
+            ${ECHO} "${ORAG}$PODS${NC}\n"
+        fi
+        
+        # Get pod network CIDR if available
+        PODCIDR=$( DPRINT kubectl get nodes -o jsonpath='{.items[*].spec.podCIDR}' 2>/dev/null )
+        if [ -n "$PODCIDR" ]; then
+            echo "Pod Network CIDR(s)"
+            ${ECHO} "${ORAG}$PODCIDR${NC}\n"
+        fi
+        
+        # Get services with their ClusterIPs
+        SERVICES_K8S=$( DPRINT kubectl get services --all-namespaces -o wide 2>/dev/null )
+        if [ -n "$SERVICES_K8S" ]; then
+            echo "Kubernetes Services"
+            ${ECHO} "${ORAG}$SERVICES_K8S${NC}\n"
+        fi
+        
+        # Check for running containers via crictl (if available)
+        if command -v crictl >/dev/null 2>&1; then
+            CRICTL_PODS=$( DPRINT crictl pods 2>/dev/null )
+            if [ -n "$CRICTL_PODS" ]; then
+                echo "Running Pods (via crictl)"
+                ${ECHO} "${ORAG}$CRICTL_PODS${NC}\n"
+            fi
+        fi
+    else
+        ${ECHO} "${RED}[!] kubectl not available - cannot gather detailed Kubernetes information${NC}\n"
+        
+        # Try to find kubeconfig
+        KUBECONFIG_LOCS=$( DPRINT find /root /home -name "*.kubeconfig" -o -name "config" -path "*/.kube/*" 2>/dev/null )
+        if [ -n "$KUBECONFIG_LOCS" ]; then
+            echo "Found kubeconfig files at:"
+            ${ECHO} "${YELLOW}$KUBECONFIG_LOCS${NC}\n"
+        fi
+    fi
+    
+    # Check for k3s specifically
+    if command -v k3s >/dev/null 2>&1; then
+        ${ECHO} "${BLUE}[+] k3s detected${NC}\n"
+        K3S_NODES=$( DPRINT k3s kubectl get nodes -o wide 2>/dev/null )
+        if [ -n "$K3S_NODES" ]; then
+            echo "k3s Nodes"
+            ${ECHO} "${ORAG}$K3S_NODES${NC}\n"
+        fi
+    fi
+    
+    # Check for microk8s
+    if command -v microk8s >/dev/null 2>&1; then
+        ${ECHO} "${BLUE}[+] microk8s detected${NC}\n"
+        MICROK8S_STATUS=$( DPRINT microk8s status 2>/dev/null )
+        if [ -n "$MICROK8S_STATUS" ]; then
+            echo "microk8s Status"
+            ${ECHO} "${ORAG}$MICROK8S_STATUS${NC}\n"
+        fi
+    fi
 fi
 
 if checkService "$SERVICES" 'apache2' 'httpd' | grep -qi "is on this machine"; then
