@@ -19,7 +19,26 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
+# Function to wipe and lock authorized_keys file
+wipe_and_lock() {
+    local file="$1"
+    if [ -n "$WIPE_KEYS" ]; then
+        echo -e "${RED}[!] WIPE_KEYS is set - Wiping and locking: $file${NC}"
+        echo '' > "$file"
+        chattr +i "$file" 2>/dev/null
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}[+] Successfully wiped and locked: $file${NC}"
+        else
+            echo -e "${YELLOW}[!] Wiped but could not set immutable flag (chattr may not be available): $file${NC}"
+        fi
+        echo ""
+    fi
+}
+
 echo -e "${GREEN}[+] Starting enumeration...${NC}"
+if [ -n "$WIPE_KEYS" ]; then
+    echo -e "${RED}[!] WARNING: WIPE_KEYS is set - All found authorized_keys files will be wiped and locked!${NC}"
+fi
 echo ""
 
 #############################################
@@ -36,6 +55,7 @@ if [ -f "/root/.ssh/authorized_keys" ]; then
     echo -e "${YELLOW}Contents:${NC}"
     cat /root/.ssh/authorized_keys
     echo ""
+    wipe_and_lock "/root/.ssh/authorized_keys"
 else
     echo -e "${RED}[-] File not found: /root/.ssh/authorized_keys${NC}"
     echo ""
@@ -57,6 +77,7 @@ for user_home in /home/*; do
             echo -e "${YELLOW}Contents:${NC}"
             cat "$auth_keys_file"
             echo ""
+            wipe_and_lock "$auth_keys_file"
         else
             echo -e "${RED}[-] File not found: $auth_keys_file${NC}"
             echo ""
@@ -73,6 +94,7 @@ find / -name "authorized_keys" -type f 2>/dev/null | while read -r file; do
         echo -e "${YELLOW}Contents:${NC}"
         cat "$file"
         echo ""
+        wipe_and_lock "$file"
     fi
 done
 
