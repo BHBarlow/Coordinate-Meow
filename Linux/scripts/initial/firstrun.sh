@@ -1,14 +1,6 @@
 #!/bin/sh
 # @d_tranman/Nigel Gerald/Nigerald
 # KaliPatriot | TTU CCDC | Landon Byrge
-# Foister is just happy to be here
-
-if [ -z "$BCK" ]; then
-    BCK="/root/.cache"
-fi
-
-BCK=$BCK/initial
-mkdir -p $BCK
 
 sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
 setenforce 0 2>/dev/null
@@ -31,7 +23,7 @@ SUSE(){
 DEBIAN(){
     apt-get -qq update >/dev/null
 
-    for i in "sudo net-tools iptables iproute2 sed curl wget bash gcc gzip make procps socat tar auditd rsyslog tcpdump unhide strace debsums bpftrace traceroute binutils lsof dnsutils e2fsprogs diffutils unzip ca-certificates python3"; do
+ash gcc gzip make procps socat tar auditd rsyslog tcpdump unhide strace debsums bpftrace traceroute binutils lsof dnsutils e2fsprogs diffutils unzip ca-certificates python3"; do    for i in "sudo net-tools iptables iproute2 sed curl wget b
         apt-get -qq install $i -y
     done
 }
@@ -92,11 +84,6 @@ elif command -v pkg >/dev/null || command -v pkg_info >/dev/null; then
     BSD
 fi
 
-# backup /etc/passwd
-mkdir $BCK
-cp /etc/passwd $BCK/users
-cp /etc/group $BCK/groups
-
 # check our ports
 if command -v sockstat >/dev/null ; then
     LIST_CMD="sockstat -l"
@@ -113,32 +100,5 @@ else
     ESTB_CMD="echo 'No netstat, sockstat or ss found'"
 fi
 
-$LIST_CMD > $BCK/listen
-$ESTB_CMD > $BCK/estab
-
-# pam
-mkdir -p $BCK/pam/conf
-mkdir -p $BCK/pam/pam_libraries
-cp -R /etc/pam.d/ $BCK/pam/conf/
-MOD=$(find /lib/ /lib64/ /lib32/ /usr/lib/ /usr/lib64/ /usr/lib32/ -name "pam_unix.so" 2>/dev/null)
-for m in $MOD; do
-    moddir=$(dirname $m)
-    mkdir -p $BCK/pam/pam_libraries/$moddir
-    cp $moddir/pam*.so $BCK/pam/pam_libraries/$moddir
-done
 
 
-# Hi UCF :)
-echo -e "\033[34m[i] Setting Permissions\033[0m"
-setfacl -m u:www-data:--- $(which bash) 2>/dev/null
-setfacl -m u:www-data:--- $(which dash) 2>/dev/null
-setfacl -m u:www-data:--- $(which sh) 2>/dev/null
-setfacl -m u:www-data:--- $(which setfacl) 2>/dev/null
-setfacl -m u:apache:--- $(which bash) 2>/dev/null
-setfacl -m u:apache:--- $(which dash) 2>/dev/null
-setfacl -m u:apache:--- $(which sh) 2>/dev/null
-setfacl -m u:apache:--- $(which setfacl) 2>/dev/null
-setfacl -m u:nginx:--- $(which bash) 2>/dev/null
-setfacl -m u:nginx:--- $(which dash) 2>/dev/null
-setfacl -m u:nginx:--- $(which sh) 2>/dev/null
-setfacl -m u:nginx:--- $(which setfacl) 2>/dev/null
