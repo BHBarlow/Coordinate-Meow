@@ -214,6 +214,188 @@ elif [ $IS_BSD = true ]; then
 else
     SERVICES=$( DPRINT systemctl --type=service | grep active | awk '{print $1}' || service --status-all | grep -E '(+|is running)' )
 fi
+
+${ECHO} "\n${GREEN}#############SALT INFORMATION############${NC}\n"
+
+# Check if Salt is installed
+if [ -f /etc/salt/minion ] || [ -f /etc/salt/master ]; then
+    if [ -f /etc/salt/minion ]; then
+        ${ECHO} "${BLUE}[+] Salt Minion is installed${NC}"
+        ${ECHO} "${YELLOW}Minion Config:${NC}"
+        MINION_CFG=$( cat /etc/salt/minion 2>/dev/null | grep -E "^\s*[^#]" )
+        ${ECHO} "${ORAG}$MINION_CFG${NC}\n"
+        
+        if [ -f /etc/salt/minion.d/master.conf ]; then
+            ${ECHO} "${YELLOW}Master Config (minion.d):${NC}"
+            ${ECHO} "${ORAG}$( cat /etc/salt/minion.d/master.conf | grep -E "^\s*[^#]" )${NC}\n"
+        fi
+        
+        if [ -f /etc/salt/minion_id ]; then
+            ${ECHO} "${YELLOW}Minion ID: $( cat /etc/salt/minion_id )${NC}\n"
+        fi
+        
+        # Check DNS for salt master
+        ${ECHO} "${YELLOW}Salt Master DNS lookup:${NC}"
+        SALT_DNS=$( DPRINT nslookup salt 2>/dev/null || DPRINT dig salt +short 2>/dev/null || DPRINT host salt 2>/dev/null )
+        if [ -n "$SALT_DNS" ]; then
+            ${ECHO} "${ORAG}$SALT_DNS${NC}\n"
+        fi
+    fi
+    
+    if [ -f /etc/salt/master ]; then
+        ${ECHO} "${BLUE}[+] Salt Master is installed${NC}"
+        ${ECHO} "${YELLOW}Master Config:${NC}"
+        MASTER_CFG=$( cat /etc/salt/master 2>/dev/null | grep -E "^\s*[^#]" )
+        ${ECHO} "${ORAG}$MASTER_CFG${NC}\n"
+        
+        if [ -f /etc/salt/master.d/master.conf ]; then
+            ${ECHO} "${ORAG}$( cat /etc/salt/master.d/master.conf | grep -E "^\s*[^#]" )${NC}\n"
+        fi
+        
+        # List accepted keys (minions)
+        ${ECHO} "${YELLOW}Accepted Minion Keys:${NC}"
+        SALT_KEYS=$( DPRINT salt-key -L 2>/dev/null )
+        ${ECHO} "${ORAG}$SALT_KEYS${NC}\n"
+        
+        # List salt files
+        if [ -d /srv/salt ]; then
+            ${ECHO} "${YELLOW}Salt State Files (/srv/salt):${NC}"
+            SALT_FILES=$( DPRINT ls -laR /srv/salt 2>/dev/null | head -n 50 )
+            ${ECHO} "${ORAG}$SALT_FILES${NC}\n"
+        fi
+        
+        # Check minion status
+        ${ECHO} "${YELLOW}Minion Status:${NC}"
+        MINION_STATUS=$( DPRINT salt-run manage.status 2>/dev/null )
+        ${ECHO} "${ORAG}$MINION_STATUS${NC}\n"
+    fi
+else
+    ${ECHO} "${YELLOW}[-] Salt not installed${NC}"
+fi
+
+${ECHO} "\n${GREEN}#############ANSIBLE INFORMATION############${NC}\n"
+
+# Check if ansible is installed
+if command -v ansible >/dev/null 2>&1; then
+    ${ECHO} "${BLUE}[+] Ansible is installed${NC}"
+    ANSIBLE_VERSION=$( ansible --version 2>/dev/null | head -n 1 )
+    ${ECHO} "${YELLOW}Version: $ANSIBLE_VERSION${NC}\n"
+    
+    # Find ansible config file
+    ANSIBLE_CFG=""
+    if [ -f /etc/ansible/ansible.cfg ]; then
+        ANSIBLE_CFG="/etc/ansible/ansible.cfg"
+    elif [ -f ~/.ansible.cfg ]; then
+        ANSIBLE_CFG="$HOME/.ansible.cfg"
+    elif [ -f ./ansible.cfg ]; then
+        ANSIBLE_CFG="./ansible.cfg"
+    fi
+    
+    if [ -n "$ANSIBLE_CFG" ]; then
+        ${ECHO} "${BLUE}[+] Ansible Config: $ANSIBLE_CFG${NC}"
+        ANSIBLE_CFG_CONTENTS=$( grep -vE '^\s*(#|;|$)' "$ANSIBLE_CFG" 2>/dev/null )
+        ${ECHO} "${ORAG}$ANSIBLE_CFG_CONTENTS${NC}\n"
+    fi
+    
+    # Find and display inventory files
+    ${ECHO} "${BLUE}[+] Ansible Inventory/Hosts${NC}"
+    
+    INVENTORY_LOCATIONS="/etc/ansible/hosts /etc/ansible/inventory /etc/ansible/inventory.yml /etc/ansible/inventory.yaml"
+    # Also check common project locations
+    INVENTORY_LOCATIONS="$INVENTORY_LOCATIONS $( DPRINT find /home /root /opt /var -name 'inventory' -o -name 'inventory.yml' -o -name 'inventory.yaml' -o -name 'hosts.yml' -o -name 'hosts.yaml' 2>/dev/null | head -n 10 )"
+    
+    for inv in $INVENTORY_LOCATIONS; do
+        if [ -f "$inv" ]; then
+            ${ECHO} "\n${YELLOW}Inventory File: $inv${NC}"
+            ${ECHO} "${ORAG}$( cat "$inv" | grep -vE '^\s*(#|$)' | head -n 50 )${NC}"
+        elif [ -d "$inv" ]; then
+            ${ECHO} "\n${YELLOW}Inventory Directory: $inv${NC}"
+            for f in "$inv"/*; do
+                if [ -f "$f" ]; then
+                    ${ECHO} "${YELLOW}  -> $f${NC}"
+                    ${ECHO} "${ORAG}$( cat "$f" | grep -vE '^\s*(#|$)' | head -n 30 )${NC}"
+                fi
+            done
+        fi
+    done
+    
+    # Check authentication method
+    ${ECHO} "\n${BLUE}[+] Ansible Authentication Method${NC}"
+    
+    # Check for SSH key auth in config
+    if [ -n "$ANSIBLE_CFG" ]; then
+        KEY_FILE=$( grep -iE '^\s*private_key_file' "$ANSIBLE_CFG" 2>/dev/null )
+        ASK_PASS=$( grep -iE '^\s*ask_pass' "$ANSIBLE_CFG" 2>/dev/null )
+        REMOTE_USER=$( grep -iE '^\s*remote_user' "$ANSIBLE_CFG" 2>/dev/null )
+        
+        if [ -n "$KEY_FILE" ]; then
+            ${ECHO} "${YELLOW}Key Auth Configured: $KEY_FILE${NC}"
+        fi
+        if [ -n "$ASK_PASS" ]; then
+            ${ECHO} "${YELLOW}Password Prompt: $ASK_PASS${NC}"
+        fi
+        if [ -n "$REMOTE_USER" ]; then
+            ${ECHO} "${YELLOW}Remote User: $REMOTE_USER${NC}"
+        fi
+    fi
+    
+    # Check for vault usage (indicates password storage)
+    VAULT_FILES=$( DPRINT find /etc/ansible /home /root /opt -name '*.vault' -o -name 'vault.yml' -o -name 'vault.yaml' -o -name '*vault*.yml' 2>/dev/null | head -n 5 )
+    if [ -n "$VAULT_FILES" ]; then
+        ${ECHO} "${YELLOW}Vault Files Found (may contain passwords):${NC}"
+        ${ECHO} "${ORAG}$VAULT_FILES${NC}"
+    fi
+    
+    # Check group_vars and host_vars for auth settings
+    for vardir in /etc/ansible/group_vars /etc/ansible/host_vars; do
+        if [ -d "$vardir" ]; then
+            ${ECHO} "\n${YELLOW}Checking $vardir for auth settings:${NC}"
+            AUTH_VARS=$( DPRINT grep -rliE 'ansible_ssh_pass|ansible_password|ansible_ssh_private_key|ansible_become_pass' "$vardir" 2>/dev/null )
+            if [ -n "$AUTH_VARS" ]; then
+                ${ECHO} "${RED}Files with credentials:${NC}"
+                ${ECHO} "${ORAG}$AUTH_VARS${NC}"
+                for f in $AUTH_VARS; do
+                    ${ECHO} "${YELLOW}Contents of $f:${NC}"
+                    ${ECHO} "${ORAG}$( cat "$f" | grep -vE '^\s*(#|$)' )${NC}"
+                done
+            fi
+        fi
+    done
+    
+    # Find playbooks
+    ${ECHO} "\n${BLUE}[+] Ansible Playbooks${NC}"
+    PLAYBOOK_DIRS="/etc/ansible /opt /home /root /var"
+    PLAYBOOKS=$( DPRINT find $PLAYBOOK_DIRS -maxdepth 4 \( -name '*.yml' -o -name '*.yaml' \) -exec grep -l '^\s*-\s*hosts:' {} \; 2>/dev/null | head -n 20 )
+    
+    if [ -n "$PLAYBOOKS" ]; then
+        ${ECHO} "${YELLOW}Found Playbooks:${NC}"
+        for pb in $PLAYBOOKS; do
+            PBNAME=$( basename "$pb" )
+            PBHOSTS=$( grep -E '^\s*-?\s*hosts:' "$pb" 2>/dev/null | head -n 3 )
+            ${ECHO} "${ORAG}$pb${NC}"
+            ${ECHO} "  ${YELLOW}Targets: $PBHOSTS${NC}"
+        done
+    else
+        ${ECHO} "${YELLOW}No playbooks found in common locations${NC}"
+    fi
+    
+    # Check for ansible-pull (indicates pull-based setup)
+    if command -v ansible-pull >/dev/null 2>&1; then
+        PULL_CRON=$( DPRINT grep -r 'ansible-pull' /etc/cron* /var/spool/cron* 2>/dev/null )
+        if [ -n "$PULL_CRON" ]; then
+            ${ECHO} "\n${BLUE}[+] Ansible Pull Cron Jobs${NC}"
+            ${ECHO} "${ORAG}$PULL_CRON${NC}"
+        fi
+    fi
+    
+    # Check for AWX/Tower
+    if command -v awx >/dev/null 2>&1 || [ -d /var/lib/awx ]; then
+        ${ECHO} "\n${BLUE}[+] AWX/Tower Detected${NC}"
+    fi
+else
+    ${ECHO} "${YELLOW}[-] Ansible not installed${NC}"
+fi
+
 APACHE2=false
 NGINX=false
 checkService()
