@@ -31,14 +31,14 @@ func SsherWrapper(i Instance, client *goph.Client) {
 		for _, command := range Commands {
 			logger.Debug(fmt.Sprintf("Processing command: %s", command))
 			i.Script = fmt.Sprintf("command: %s", command) // For logging purposes
-			
+
 			// Build full command with environment variables
 			var fullCommand string
 			for _, cmd := range EnvironCmds {
 				fullCommand += fmt.Sprintf("%s ", cmd)
 			}
 			fullCommand += command
-			
+
 			wg.Add(1)
 			go ssherCommand(i, client, fullCommand, &wg)
 			i.ID++
@@ -160,7 +160,7 @@ func ssherCommand(i Instance, client *goph.Client, command string, wg *sync.Wait
 			logger.Err(fmt.Sprintf("%s: Error running command: %s\n", i.IP, err))
 		}
 	}
-	
+
 	if len(stroutput) > 0 {
 		logger.Stdout(i, stroutput)
 		if *CreateConfig != "" {
