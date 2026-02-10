@@ -54,13 +54,10 @@ check_user_keys() {
             username=$(basename "$user_home")
             auth_keys_file="$user_home/.ssh/authorized_keys"
             
-            echo -e "${BLUE}Checking user: ${username}${NC}"
-            
             if [ -f "$auth_keys_file" ]; then
-                echo -e "${GREEN}[+] File exists: $auth_keys_file${NC}"
-                echo -e "${YELLOW}Contents:${NC}"
-                cat "$auth_keys_file"
-                echo ""
+                # Read file content safely
+                key_content=$(cat "$auth_keys_file")
+                echo -e "${GREEN}[+] File exists: $auth_keys_file:${NC}$key_content"
                 wipe_and_lock "$auth_keys_file"
             else
                 echo -e "${RED}[-] File not found: $auth_keys_file${NC}"
