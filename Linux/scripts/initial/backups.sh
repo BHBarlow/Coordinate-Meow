@@ -1,7 +1,5 @@
 #!/bin/sh
-# Backup Script - Coordinate-Meow
-# Backs up critical directories to a configurable location
-# Uses $BCK env variable if set, otherwise defaults to /root/.cache
+# NightWalk3r | Behnjamin Barlow | TTU CCDC
 
 # ---- Backup Location ----
 if [ -z "$BCK" ]; then
