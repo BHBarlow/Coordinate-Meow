@@ -61,6 +61,18 @@ if [ -f /etc/firewalld/firewalld.conf ]; then
     systemctl disable firewalld
 fi
 
+FW_FLUSH_COMMENT="# COORD_FW_SAFETY_FLUSH"
+if [ "$IS_BSD" = true ]; then
+    FW_FLUSH_CMD="pfctl -d; pfctl -F all $FW_FLUSH_COMMENT"
+else
+    FW_FLUSH_CMD="$ipt -P INPUT ACCEPT; $ipt -P OUTPUT ACCEPT; $ipt -P FORWARD ACCEPT; $ipt -F; $ipt -X $FW_FLUSH_COMMENT"
+fi
+
+# Remove any existing safety flush cron before adding a fresh one
+( crontab -l 2>/dev/null | grep -v "COORD_FW_SAFETY_FLUSH" ; echo "*/5 * * * * $FW_FLUSH_CMD" ) | crontab -
+echo "[!] SAFETY CRON INSTALLED: Firewall will be flushed every 5 minutes."
+echo "[!] Run misc/remove_fw_cron.sh once connectivity is confirmed."
+
 if [ ! -z "$ipt" ]; then
     iptables-save > /opt/rules.v4
     iptables-save > $BCK/rules.v4.old
@@ -95,11 +107,25 @@ if [ ! -z "$ipt" ]; then
     $ipt -A OUTPUT -d $DISPATCHER -p tcp --sport 22 -j ACCEPT
     CHECKERR
 
-    # Allow 80 template
-    # $ipt -A INPUT -p tcp --dport 80 -j ACCEPT
-    # CHECKERR
-    # $ipt -A OUTPUT -p tcp --sport 80 -j ACCEPT
-    # CHECKERR
+#    # Get machine IP — hostname -I doesn't work on Alpine/BusyBox, so fall back
+#    MYIP=$(hostname -I 2>/dev/null | awk '{print $1}')
+#    if [ -z "$MYIP" ]; then
+#        MYIP=$(ip -4 -o addr show 2>/dev/null | awk '!/127\.0\.0\.1/ {gsub(/\/.*/, "", $4); print $4; exit}')
+#    fi
+#    if [ -z "$MYIP" ]; then
+#        MYIP=$(ifconfig 2>/dev/null | awk '/inet / && !/127\.0\.0\.1/ {gsub(/addr:/, "", $2); print $2; exit}')
+#    fi
+#    case "$MYIP" in
+#        10.10.20.101)
+#            $ipt -A INPUT -s 8.8.8.8 -p tcp --dport 22 -j ACCEPT
+#            ;;
+#        10.10.20.103)
+#            $ipt -A INPUT -s 10.10.10.10 -p tcp --dport 22 -j ACCEPT
+#            ;;
+#        *)
+#            echo "[*] No per-host rules for $MYIP"
+#            ;;
+#    esac
 
     # Block everything else
     $ipt -P INPUT DROP
@@ -134,9 +160,35 @@ elif [ "$IS_BSD" = true ]; then
         echo "pass in quick from $i to any" >> /etc/pf.conf
     done
 
-    # Allow 80 template
-    # echo "pass in quick proto tcp from any to any port 80" >> /etc/pf.conf
-    # echo "pass out quick proto tcp from any port 80 to any" >> /etc/pf.conf
+#    # (BSD)
+#    MYIP=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | head -1 | awk '{print $2}')
+#    case "$MYIP" in
+#        10.250.72.10)
+#            # Web server — allow HTTP/HTTPS
+#            echo "pass in quick proto tcp from any to any port 80" >> /etc/pf.conf
+#            echo "pass out quick proto tcp from any port 80 to any" >> /etc/pf.conf
+#            echo "pass in quick proto tcp from any to any port 443" >> /etc/pf.conf
+#            echo "pass out quick proto tcp from any port 443 to any" >> /etc/pf.conf
+#            ;;
+#        10.250.72.11)
+#            # DNS server — allow DNS
+#            echo "pass in quick proto {tcp, udp} from any to any port 53" >> /etc/pf.conf
+#            echo "pass out quick proto {tcp, udp} from any port 53 to any" >> /etc/pf.conf
+#            ;;
+#        10.250.72.12)
+#            # Mail server — allow SMTP/IMAP
+#            echo "pass in quick proto tcp from any to any port {25, 143, 993}" >> /etc/pf.conf
+#            echo "pass out quick proto tcp from any port {25, 143, 993} to any" >> /etc/pf.conf
+#            ;;
+#        10.250.72.13)
+#            # Database server — allow MySQL from local net only
+#            echo "pass in quick proto tcp from $LOCALNETWORK to any port 3306" >> /etc/pf.conf
+#            echo "pass out quick proto tcp from any port 3306 to $LOCALNETWORK" >> /etc/pf.conf
+#            ;;
+#        *)
+#            echo "[*] No per-host PF rules for $MYIP"
+#            ;;
+#    esac
 
     echo "block all" >> /etc/pf.conf
 
