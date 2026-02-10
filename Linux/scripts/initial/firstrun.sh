@@ -1,13 +1,13 @@
 #!/bin/sh
 # @d_tranman/Nigel Gerald/Nigerald
 # KaliPatriot | TTU CCDC | Landon Byrge
+# Foister is just happy to be here
 
 if [ -z "$BCK" ]; then
     BCK="/root/.cache"
 fi
 
 BCK=$BCK/initial
-
 mkdir -p $BCK
 
 sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
@@ -127,3 +127,18 @@ for m in $MOD; do
     cp $moddir/pam*.so $BCK/pam/pam_libraries/$moddir
 done
 
+
+# Hi UCF :)
+echo -e "\033[34m[i] Setting Permissions\033[0m"
+setfacl -m u:www-data:--- $(which bash) 2>/dev/null
+setfacl -m u:www-data:--- $(which dash) 2>/dev/null
+setfacl -m u:www-data:--- $(which sh) 2>/dev/null
+setfacl -m u:www-data:--- $(which setfacl) 2>/dev/null
+setfacl -m u:apache:--- $(which bash) 2>/dev/null
+setfacl -m u:apache:--- $(which dash) 2>/dev/null
+setfacl -m u:apache:--- $(which sh) 2>/dev/null
+setfacl -m u:apache:--- $(which setfacl) 2>/dev/null
+setfacl -m u:nginx:--- $(which bash) 2>/dev/null
+setfacl -m u:nginx:--- $(which dash) 2>/dev/null
+setfacl -m u:nginx:--- $(which sh) 2>/dev/null
+setfacl -m u:nginx:--- $(which setfacl) 2>/dev/null

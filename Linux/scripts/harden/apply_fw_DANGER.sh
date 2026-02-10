@@ -1,6 +1,7 @@
 #!/bin/sh
 # thanks @d_tranman/Nigel Gerald/Nigerald
 # KaliPatriot was here, but can someone tell me what the hell is going on here?
+# Foister is just happy to be here
 
 ipt=$(command -v iptables || command -v /sbin/iptables || command -v /usr/sbin/iptables)
 IS_BSD=false
