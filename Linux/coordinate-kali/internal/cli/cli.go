@@ -43,7 +43,7 @@ func Init() {
 }
 
 func InputCheck() error {
-	if (len(Scripts) == 0 && len(Commands) == 0 && *CreateConfig == "") || ((*Usernames == "" || *Targets == "") && !*UseConfig) {
+	if (len(Scripts) == 0 && len(Commands) == 0 && *CreateConfig == "" && len(*DownloadDirs) == 0) || ((*Usernames == "" || *Targets == "") && !*UseConfig) {
 		return fmt.Errorf("Missing target(s), script(s)/command(s), and/or username(s).")
 	}
 

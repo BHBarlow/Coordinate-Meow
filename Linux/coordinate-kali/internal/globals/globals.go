@@ -38,7 +38,8 @@ var (
 	Outfile         = flag.StringP("outfile-fmt", "o", "", "Output format. If not specified, then no output is saved.")
 	Key             = flag.StringP("key", "k", "", "Use this SSH key to connect")
 	Environment     = flag.StringP("env", "E", "", "Set these variables before running scripts")
-	TmpDir		    = flag.StringP("tmpdir", "D", "/tmp", "Directory to store temporary files")
+	TmpDir		    = flag.StringP("tmpdir", "W", "/tmp", "Directory to store temporary files")
+	DownloadDirs    = flag.StringArrayP("download", "D", []string{}, "Download remote directory(s) to local output (e.g. -D /etc/ssh -D /var/log)")
 	Sudo            = flag.BoolP("sudo", "S", false, "Attempt to escalate through sudo, if not root")
 	QuietOut        = flag.BoolP("quiet", "q", false, "Print only script output")
 	SuperQuietOut   = flag.BoolP("super-quiet", "Q", false, "Print only script output, and no errors")
@@ -51,6 +52,7 @@ var (
 	UseConfig       = flag.BoolP("use-config", "U", false, "Use config.json. This has no error handling. Have fun.")
 	Command         = flag.StringArrayP("command", "x", []string{}, "Execute command(s) directly instead of scripts")
 	PrivKey         = ""
+	DownloadPaths   = []string{}
 	CallbackIPs     = []string{}
 	Scripts         = []string{}
 	Commands        = []string{}

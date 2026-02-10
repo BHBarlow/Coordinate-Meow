@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -24,6 +25,32 @@ import (
 func SsherWrapper(i Instance, client *goph.Client) {
 	logger.Debug(fmt.Sprintf("Starting SsherWrapper for instance: %+v", i))
 	var wg sync.WaitGroup
+
+	// Resolve hostname early so downloads can use it for directory names
+	if i.Hostname == "" {
+		output, err := client.Run("hostname")
+		if err != nil {
+			output, err = client.Run("cat /etc/hostname")
+		}
+		if err == nil && !strings.Contains(string(output), "No such file or directory") {
+			i.Hostname = strings.TrimSpace(string(output))
+		} else {
+			i.Hostname = i.IP
+		}
+		logger.Debug(fmt.Sprintf("Resolved hostname early: %s", i.Hostname))
+	}
+
+	// Download remote directories if -D flags were specified
+	if len(*DownloadDirs) > 0 {
+		logger.Debug(fmt.Sprintf("Download directories requested: %v", *DownloadDirs))
+		DownloadRemoteDirs(i, client)
+	}
+
+	// If only downloading (no scripts or commands), we're done
+	if len(Commands) == 0 && len(Scripts) == 0 {
+		TotalRuns++
+		return
+	}
 
 	// Handle direct commands if specified
 	if len(Commands) > 0 {
@@ -297,6 +324,129 @@ func ssher(i Instance, client *goph.Client, script string, wg *sync.WaitGroup) {
 
 	TotalRuns++
 	logger.Debug(fmt.Sprintf("Total runs incremented: %d", TotalRuns))
+}
+
+func DownloadRemoteDirs(i Instance, client *goph.Client) {
+	hostname := i.IP
+	if i.Hostname != "" {
+		hostname = i.Hostname
+	}
+	localBase := filepath.Join("output", "downloads", hostname)
+	if err := os.MkdirAll(localBase, 0755); err != nil {
+		logger.ErrExtra(i, fmt.Sprintf("Failed to create local download dir: %s", err))
+		return
+	}
+
+	for _, entry := range *DownloadDirs {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+
+		// Support remote;local syntax: -D /etc/ssh;/var/backups/ssh
+		remotePath := entry
+		localDest := ""
+		if idx := strings.Index(entry, ";"); idx != -1 {
+			remotePath = strings.TrimSpace(entry[:idx])
+			localDest = strings.TrimSpace(entry[idx+1:])
+		}
+
+		// Determine extraction target
+		// If localDest is absolute, use it directly; otherwise fall back to output/downloads/<host>
+		var extractDir string
+		if localDest != "" && filepath.IsAbs(localDest) {
+			extractDir = localDest
+		} else if localDest != "" {
+			extractDir = filepath.Join(localBase, localDest)
+		} else {
+			extractDir = localBase
+		}
+		if err := os.MkdirAll(extractDir, 0755); err != nil {
+			logger.ErrExtra(i, fmt.Sprintf("Failed to create extract dir '%s': %s", extractDir, err))
+			continue
+		}
+
+		logger.InfoExtra(i, fmt.Sprintf("Downloading %s -> %s", remotePath, extractDir))
+
+		randName := utils.GenerateRandomFileName(12)
+		tarPath := strings.TrimPrefix(remotePath, "/")
+
+		// Try archive methods in order of preference.
+		// tar exits non-zero on permission errors even when the archive is fine,
+		// so we ignore its exit code and just check the output file exists.
+		// This chain works on GNU tar, BSD tar, busybox tar, and macOS tar.
+		remoteArchive := ""
+		localArchive := ""
+		archived := false
+
+		// 1) tar.gz (works on Linux, macOS, FreeBSD, OpenBSD, Alpine)
+		remoteArchive = fmt.Sprintf("/tmp/%s.tar.gz", randName)
+		localArchive = filepath.Join(extractDir, fmt.Sprintf("%s.tar.gz", randName))
+		archiveCmd := fmt.Sprintf(
+			"tar czf %s -C / %s 2>/dev/null; [ -s %s ]",
+			remoteArchive, tarPath, remoteArchive,
+		)
+		if _, err := client.Run(archiveCmd); err == nil {
+			archived = true
+		}
+
+		// 2) Pipe through gzip separately (some minimal tars don't have -z)
+		if !archived {
+			client.Run(fmt.Sprintf("rm -f %s", remoteArchive))
+			archiveCmd = fmt.Sprintf(
+				"tar cf - -C / %s 2>/dev/null | gzip > %s 2>/dev/null; [ -s %s ]",
+				tarPath, remoteArchive, remoteArchive,
+			)
+			if _, err := client.Run(archiveCmd); err == nil {
+				archived = true
+			}
+		}
+
+		// 3) Uncompressed tar (if gzip isn't available at all)
+		if !archived {
+			client.Run(fmt.Sprintf("rm -f %s", remoteArchive))
+			remoteArchive = fmt.Sprintf("/tmp/%s.tar", randName)
+			localArchive = filepath.Join(extractDir, fmt.Sprintf("%s.tar", randName))
+			archiveCmd = fmt.Sprintf(
+				"tar cf %s -C / %s 2>/dev/null; [ -s %s ]",
+				remoteArchive, tarPath, remoteArchive,
+			)
+			if _, err := client.Run(archiveCmd); err == nil {
+				archived = true
+			}
+		}
+
+		if !archived {
+			client.Run(fmt.Sprintf("rm -f /tmp/%s.*", randName))
+			logger.ErrExtra(i, fmt.Sprintf("Failed to archive '%s' on remote (no tar or gzip?)", remotePath))
+			continue
+		}
+
+		// Download via SFTP (built into openssh, no extra binary needed on remote)
+		err := client.Download(remoteArchive, localArchive)
+		if err != nil {
+			logger.ErrExtra(i, fmt.Sprintf("Failed to download archive for '%s': %s", remotePath, err))
+			client.Run(fmt.Sprintf("rm -f %s", remoteArchive))
+			os.Remove(localArchive)
+			continue
+		}
+
+		// Clean up remote archive
+		client.Run(fmt.Sprintf("rm -f %s", remoteArchive))
+
+		// Extract locally — try gzip first, fall back to plain tar
+		extrErr := utils.ExtractTarGz(localArchive, extractDir)
+		if extrErr != nil {
+			extrErr = utils.ExtractTar(localArchive, extractDir)
+		}
+		if extrErr != nil {
+			logger.ErrExtra(i, fmt.Sprintf("Failed to extract archive for '%s': %s (keeping archive)", remotePath, extrErr))
+			continue
+		}
+
+		os.Remove(localArchive)
+		logger.InfoExtra(i, fmt.Sprintf("Successfully downloaded %s -> %s", remotePath, extractDir))
+	}
 }
 
 func Upload(client *goph.Client, localPath string, remotePath string) error {

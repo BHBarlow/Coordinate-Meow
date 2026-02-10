@@ -1,11 +1,14 @@
 package utils
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"os"
 	"bufio"
+	"path/filepath"
 	"strings"
 	"crypto/rand"
 
@@ -103,4 +106,78 @@ func Dos2unix(filePath string) error {
 	}
 
 	return nil
+}
+
+func extractTarReader(tarReader *tar.Reader, destDir string) error {
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("tar read error: %w", err)
+		}
+
+		target := filepath.Join(destDir, header.Name)
+
+		// Prevent path traversal
+		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(destDir)) {
+			logger.Debug(fmt.Sprintf("Skipping suspicious path: %s", header.Name))
+			continue
+		}
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return fmt.Errorf("failed to create dir '%s': %w", target, err)
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return fmt.Errorf("failed to create parent dir for '%s': %w", target, err)
+			}
+			outFile, err := os.Create(target)
+			if err != nil {
+				return fmt.Errorf("failed to create file '%s': %w", target, err)
+			}
+			if _, err := io.Copy(outFile, tarReader); err != nil {
+				outFile.Close()
+				return fmt.Errorf("failed to write file '%s': %w", target, err)
+			}
+			outFile.Close()
+		case tar.TypeSymlink:
+			os.Remove(target)
+			os.Symlink(header.Linkname, target)
+		case tar.TypeLink:
+			linkTarget := filepath.Join(destDir, header.Linkname)
+			os.Remove(target)
+			os.Link(linkTarget, target)
+		}
+	}
+	return nil
+}
+
+func ExtractTarGz(archivePath string, destDir string) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("failed to open tar.gz: %w", err)
+	}
+	defer f.Close()
+
+	gzReader, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("failed to create gzip reader: %w", err)
+	}
+	defer gzReader.Close()
+
+	return extractTarReader(tar.NewReader(gzReader), destDir)
+}
+
+func ExtractTar(archivePath string, destDir string) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("failed to open tar: %w", err)
+	}
+	defer f.Close()
+
+	return extractTarReader(tar.NewReader(f), destDir)
 }
