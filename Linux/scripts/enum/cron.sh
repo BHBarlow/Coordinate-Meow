@@ -7,6 +7,5 @@ while IFS=: read -r user _ _ _ _ _ _; do
     if [ -n "$cron" ]; then
         echo "[$user]"
         echo "$cron"
-        echo ""
     fi
 done < /etc/passwd
