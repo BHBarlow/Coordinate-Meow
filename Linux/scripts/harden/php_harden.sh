@@ -1,4 +1,4 @@
-# php
+#!/bin/sh
 # Thanks UCI
 
 sys=$(command -v service || command -v systemctl || command -v rc-service)
