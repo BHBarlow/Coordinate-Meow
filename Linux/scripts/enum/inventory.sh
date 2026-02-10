@@ -233,13 +233,6 @@ if [ -f /etc/salt/minion ] || [ -f /etc/salt/master ]; then
         if [ -f /etc/salt/minion_id ]; then
             ${ECHO} "${YELLOW}Minion ID: $( cat /etc/salt/minion_id )${NC}\n"
         fi
-        
-        # Check DNS for salt master
-        ${ECHO} "${YELLOW}Salt Master DNS lookup:${NC}"
-        SALT_DNS=$( DPRINT nslookup salt 2>/dev/null || DPRINT dig salt +short 2>/dev/null || DPRINT host salt 2>/dev/null )
-        if [ -n "$SALT_DNS" ]; then
-            ${ECHO} "${ORAG}$SALT_DNS${NC}\n"
-        fi
     fi
     
     if [ -f /etc/salt/master ]; then
