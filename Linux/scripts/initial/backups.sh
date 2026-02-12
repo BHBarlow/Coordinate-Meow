@@ -63,11 +63,45 @@ backup_dir() {
 
     if [ -d "$SRC" ]; then
         echo -e "\033[34m[i] Backing up $SRC ...\033[0m"
-        cd / && zip -rq "$BCK/${NAME}_${TIMESTAMP}.zip" "${SRC#/}" 2>/dev/null
+        ARCHIVE="$BCK/${NAME}_${TIMESTAMP}"
+
+        # Try tar.gz first (available everywhere), fall back to zip
+        if command -v tar >/dev/null 2>&1; then
+            tar czf "${ARCHIVE}.tar.gz" -C / "${SRC#/}" 2>/dev/null
+            if [ -s "${ARCHIVE}.tar.gz" ]; then
+                echo -e "\033[32m[+] $SRC backed up successfully (tar.gz)\033[0m"
+                return 0
+            else
+                rm -f "${ARCHIVE}.tar.gz"
+            fi
+            # Try uncompressed tar if gzip failed
+            tar cf "${ARCHIVE}.tar" -C / "${SRC#/}" 2>/dev/null
+            if [ -s "${ARCHIVE}.tar" ]; then
+                echo -e "\033[32m[+] $SRC backed up successfully (tar)\033[0m"
+                return 0
+            else
+                rm -f "${ARCHIVE}.tar"
+            fi
+        fi
+
+        # Fallback to zip if tar somehow failed
+        if command -v zip >/dev/null 2>&1; then
+            (cd / && zip -rq "${ARCHIVE}.zip" "${SRC#/}" 2>/dev/null)
+            if [ -s "${ARCHIVE}.zip" ]; then
+                echo -e "\033[32m[+] $SRC backed up successfully (zip)\033[0m"
+                return 0
+            else
+                rm -f "${ARCHIVE}.zip"
+            fi
+        fi
+
+        # Last resort: cp
+        mkdir -p "$BCK/${NAME}_${TIMESTAMP}"
+        cp -a "$SRC/." "$BCK/${NAME}_${TIMESTAMP}/" 2>/dev/null
         if [ $? -eq 0 ]; then
-            echo -e "\033[32m[+] $SRC backed up successfully\033[0m"
+            echo -e "\033[32m[+] $SRC backed up successfully (copy)\033[0m"
         else
-            echo -e "\033[33m[!] $SRC backup completed with warnings\033[0m"
+            echo -e "\033[31m[-] $SRC backup FAILED\033[0m"
         fi
     else
         echo -e "\033[33m[!] $SRC does not exist, skipping\033[0m"

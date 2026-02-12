@@ -181,3 +181,78 @@ func ExtractTar(archivePath string, destDir string) error {
 
 	return extractTarReader(tar.NewReader(f), destDir)
 }
+
+// ExtractTarGzFromReader extracts a gzipped tar stream directly from a reader (e.g. SSH stdout pipe)
+func ExtractTarGzFromReader(r io.Reader, destDir string) error {
+	gzReader, err := gzip.NewReader(r)
+	if err != nil {
+		return fmt.Errorf("failed to create gzip reader: %w", err)
+	}
+	defer gzReader.Close()
+
+	return extractTarReader(tar.NewReader(gzReader), destDir)
+}
+
+// ExtractTarFromReader extracts an uncompressed tar stream directly from a reader
+func ExtractTarFromReader(r io.Reader, destDir string) error {
+	return extractTarReader(tar.NewReader(r), destDir)
+}
+
+// WriteTarToWriter creates a tar archive of a local directory and streams it to a writer.
+// Used for streaming uploads over SSH stdin.
+func WriteTarToWriter(sourceDir string, w io.Writer) error {
+	tw := tar.NewWriter(w)
+	defer tw.Close()
+
+	sourceDir = filepath.Clean(sourceDir)
+	baseDir := filepath.Base(sourceDir)
+
+	return filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // skip files we can't read
+		}
+
+		// Build relative path: contents go into the tar root
+		relPath, err := filepath.Rel(sourceDir, path)
+		if err != nil {
+			return nil
+		}
+		// Put files under the base directory name
+		tarPath := filepath.ToSlash(filepath.Join(baseDir, relPath))
+		if relPath == "." {
+			tarPath = baseDir
+		}
+
+		// Handle symlinks
+		link := ""
+		if info.Mode()&os.ModeSymlink != 0 {
+			link, err = os.Readlink(path)
+			if err != nil {
+				return nil
+			}
+		}
+
+		header, err := tar.FileInfoHeader(info, link)
+		if err != nil {
+			return nil
+		}
+		header.Name = tarPath
+
+		if err := tw.WriteHeader(header); err != nil {
+			return fmt.Errorf("failed to write tar header for '%s': %w", path, err)
+		}
+
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			return nil // skip unreadable files
+		}
+		defer f.Close()
+
+		_, err = io.Copy(tw, f)
+		return err
+	})
+}
