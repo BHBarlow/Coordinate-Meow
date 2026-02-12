@@ -40,6 +40,7 @@ var (
 	Environment     = flag.StringP("env", "E", "", "Set these variables before running scripts")
 	TmpDir		    = flag.StringP("tmpdir", "W", "/tmp", "Directory to store temporary files")
 	DownloadDirs    = flag.StringArrayP("download", "D", []string{}, "Download remote directory(s) to local output (e.g. -D /etc/ssh -D /var/log)")
+	UploadFiles     = flag.StringArrayP("upload", "F", []string{}, "Upload local file/dir(s) to remote (e.g. -F 'local;remote' or -F ./tools;/tmp/tools)")
 	Sudo            = flag.BoolP("sudo", "S", false, "Attempt to escalate through sudo, if not root")
 	QuietOut        = flag.BoolP("quiet", "q", false, "Print only script output")
 	SuperQuietOut   = flag.BoolP("super-quiet", "Q", false, "Print only script output, and no errors")
