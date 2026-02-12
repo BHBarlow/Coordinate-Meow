@@ -118,7 +118,7 @@ drop_processes() {
     done
 }
 
-# ============================================================================
+# 5============================================================================
 #  3.  DELETE  MALICIOUS  BINARIES / FILES
 # ============================================================================
 drop_binaries() {
@@ -187,44 +187,10 @@ drop_shells() {
 }
 
 # ============================================================================
-#  6.  SWEEP  COMMON  PERSISTENCE  PATHS
-# ============================================================================
-drop_persistence() {
-    log_step "Sweeping common persistence locations"
-
-    # ── Authorized keys (red team backdoor) ──
-    log_info "Clearing all authorized_keys files..."
-    find / -name "authorized_keys" -type f 2>/dev/null | while read -r KEYFILE; do
-        log_info "  Emptied: $KEYFILE"
-        : > "$KEYFILE"
-    done
-
-    # ── /etc/ld.so.preload (LD_PRELOAD rootkit) ──
-    if [ -s /etc/ld.so.preload ]; then
-        log_warn "Non-empty /etc/ld.so.preload detected — clearing."
-        : > /etc/ld.so.preload
-    fi
-
-    # ── World-writable SUID binaries (shouldn't exist) ──
-    log_info "Checking for world-writable SUID binaries..."
-    find / -perm -4002 -type f 2>/dev/null | while read -r SUID; do
-        log_warn "  Suspicious SUID: $SUID"
-        chmod o-w "$SUID"
-        log_info "  Removed world-write on: $SUID"
-    done
-
-    # ── /tmp & /var/tmp & /dev/shm cleanup tip ──
-    log_info "Listing executables in /tmp, /var/tmp, /dev/shm:"
-    find /tmp /var/tmp /dev/shm -type f -executable 2>/dev/null | while read -r F; do
-        log_warn "  Executable found: $F  (review manually or add to BINARIES)"
-    done
-}
-
-# ============================================================================
 #  MAIN
 # ============================================================================
 main() {
-    log_step "GREAT WALL — DROP CURTAIN"
+    log_step "GREAT WALL"
     log_info "Starting full sweep at $(date)"
 
     drop_services
