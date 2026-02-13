@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/melbahja/goph"
+	cryptossh "golang.org/x/crypto/ssh"
 
 	. "github.com/LByrgeCP/coordinate-kali/internal/globals"
 	"github.com/LByrgeCP/coordinate-kali/internal/logger"
@@ -39,11 +40,23 @@ func attemptSSH(ip, outfile, username, password string) bool {
 	}
 
 	// Try standard Password authentication first
-	client, err := goph.NewUnknown(i.Username, i.IP, goph.Password(i.Password))
+	client, err := goph.NewConn(&goph.Config{
+		User:     i.Username,
+		Addr:     i.IP,
+		Port:     uint(*Port),
+		Auth:     goph.Password(i.Password),
+		Callback: cryptossh.InsecureIgnoreHostKey(),
+	})
 	if err != nil {
 		logger.Debug(fmt.Sprintf("Password auth failed for %s, trying KeyboardInteractive...", i.IP))
 		// Fallback to KeyboardInteractive
-		client, err = goph.NewUnknown(i.Username, i.IP, goph.KeyboardInteractive(i.Password))
+		client, err = goph.NewConn(&goph.Config{
+			User:     i.Username,
+			Addr:     i.IP,
+			Port:     uint(*Port),
+			Auth:     goph.KeyboardInteractive(i.Password),
+			Callback: cryptossh.InsecureIgnoreHostKey(),
+		})
 	}
 	return handleSSHConnection(i, client, err)
 }
@@ -83,7 +96,13 @@ func RunnerBf(ip string, outfile string, w *sync.WaitGroup) {
 				logger.ErrExtra(i, fmt.Sprintf("Error loading private key for user '%s': %s", u, err))
 				continue
 			}
-			client, err := goph.NewUnknown(u, ip, privKey)
+			client, err := goph.NewConn(&goph.Config{
+				User:     u,
+				Addr:     ip,
+				Port:     uint(*Port),
+				Auth:     privKey,
+				Callback: cryptossh.InsecureIgnoreHostKey(),
+			})
 			found = handleSSHConnection(i, client, err)
 		}
 	}

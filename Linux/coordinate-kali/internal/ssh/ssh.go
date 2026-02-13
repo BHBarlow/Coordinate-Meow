@@ -533,9 +533,8 @@ func DownloadRemoteDirs(i Instance, client *goph.Client) {
 		return
 	}
 
-	// Partition: entries without ";" get batched into ONE tar stream (fastest).
-	// Entries with ";" (custom local dest) stream individually.
-	var batchRemote []string
+	// Partition: entries with ";" use the explicit local dest.
+	// Entries without ";" use the basename of the remote path as local subdir.
 	type customEntry struct{ remote, extractDir string }
 	var customs []customEntry
 
@@ -556,41 +555,14 @@ func DownloadRemoteDirs(i Instance, client *goph.Client) {
 			os.MkdirAll(ed, 0755)
 			customs = append(customs, customEntry{remote, ed})
 		} else {
-			batchRemote = append(batchRemote, entry)
+			// Default: extract into localBase directly.
+			// The tar entries already start with the basename (e.g. "backups/...")
+			// so extraction naturally creates output/downloads/{hostname}/backups/
+			customs = append(customs, customEntry{entry, localBase})
 		}
 	}
 
-	// Batch all default-dest paths into ONE tar stream over ONE SSH session.
-	// e.g. -D /etc/ssh -D /var/log -D /home → one cmd: cd / && tar cf - etc/ssh var/log home
-	if len(batchRemote) > 0 {
-		tarPaths := make([]string, len(batchRemote))
-		for j, p := range batchRemote {
-			tarPaths[j] = strings.TrimPrefix(strings.TrimSpace(p), "/")
-		}
-		allPaths := strings.Join(tarPaths, " ")
-		logger.InfoExtra(i, fmt.Sprintf("Batch downloading %d paths -> %s", len(batchRemote), localBase))
-
-		// Uncompressed first — fastest on LAN (no CPU overhead on either side)
-		cmd := fmt.Sprintf("cd / && tar cf - %s 2>/dev/null", allPaths)
-		if err := streamTarOverSSH(client, cmd, localBase, false); err == nil {
-			logger.InfoExtra(i, fmt.Sprintf("Batch download complete (%d paths)", len(batchRemote)))
-		} else {
-			logger.Debug(fmt.Sprintf("Batch uncompressed failed: %s", err))
-			if hasGzip {
-				cmd = fmt.Sprintf("cd / && tar cf - %s 2>/dev/null | gzip", allPaths)
-				if err := streamTarOverSSH(client, cmd, localBase, true); err == nil {
-					logger.InfoExtra(i, fmt.Sprintf("Batch download complete (%d paths, gzipped)", len(batchRemote)))
-				} else {
-					logger.Debug(fmt.Sprintf("Batch gzip failed: %s — per-entry fallback", err))
-					batchFallbackIndividual(i, client, batchRemote, localBase, hasGzip)
-				}
-			} else {
-				batchFallbackIndividual(i, client, batchRemote, localBase, hasGzip)
-			}
-		}
-	}
-
-	// Custom-dest entries: concurrent, one stream each
+	// Download all entries concurrently, one stream each
 	if len(customs) > 0 {
 		var wg sync.WaitGroup
 		for _, ce := range customs {
@@ -623,27 +595,18 @@ func parseDownloadEntry(entry string, localBase string) (remotePath, extractDir 
 }
 
 // batchFallbackIndividual streams each path one-by-one when the batch tar fails.
-func batchFallbackIndividual(i Instance, client *goph.Client, paths []string, localBase string, hasGzip bool) {
-	var wg sync.WaitGroup
-	for _, p := range paths {
-		wg.Add(1)
-		go func(remote string) {
-			defer wg.Done()
-			downloadSingleStream(i, client, remote, localBase, hasGzip)
-		}(p)
-	}
-	wg.Wait()
-}
-
 // downloadSingleStream downloads one remote path via streaming tar.
 // Skips methods known unavailable from probe — no wasted attempts.
 func downloadSingleStream(i Instance, client *goph.Client, remotePath string, extractDir string, hasGzip bool) {
-	tarPath := strings.TrimPrefix(strings.TrimSpace(remotePath), "/")
+	cleanPath := strings.TrimRight(strings.TrimSpace(remotePath), "/")
+	parentDir := filepath.Dir(cleanPath)
+	baseName := filepath.Base(cleanPath)
 	logger.InfoExtra(i, fmt.Sprintf("Downloading %s -> %s", remotePath, extractDir))
 
 	// 1) Uncompressed tar — fastest on LAN, works everywhere tar exists
-	// Uses cd / instead of -C / for maximum compat (busybox, BSD, GNU)
-	cmd := fmt.Sprintf("cd / && tar cf - %s 2>/dev/null", tarPath)
+	// cd into parent dir so tar entries use only the basename
+	// e.g. /root/.cache/backups -> cd /root/.cache && tar cf - backups
+	cmd := fmt.Sprintf("cd %s && tar cf - %s 2>/dev/null", parentDir, baseName)
 	if err := streamTarOverSSH(client, cmd, extractDir, false); err == nil {
 		logger.InfoExtra(i, fmt.Sprintf("Downloaded %s", remotePath))
 		return
@@ -651,7 +614,7 @@ func downloadSingleStream(i Instance, client *goph.Client, remotePath string, ex
 
 	// 2) Compressed — only if gzip exists (probe told us)
 	if hasGzip {
-		cmd = fmt.Sprintf("cd / && tar cf - %s 2>/dev/null | gzip", tarPath)
+		cmd = fmt.Sprintf("cd %s && tar cf - %s 2>/dev/null | gzip", parentDir, baseName)
 		if err := streamTarOverSSH(client, cmd, extractDir, true); err == nil {
 			logger.InfoExtra(i, fmt.Sprintf("Downloaded %s (gzip)", remotePath))
 			return
@@ -702,7 +665,9 @@ func streamTarOverSSH(client *goph.Client, remoteCmd string, extractDir string, 
 // downloadFallbackSFTP is the last-resort: tar to temp file on remote, SFTP
 // download, extract locally. Only used when streaming completely fails.
 func downloadFallbackSFTP(i Instance, client *goph.Client, remotePath string, extractDir string) {
-	tarPath := strings.TrimPrefix(strings.TrimSpace(remotePath), "/")
+	cleanPath := strings.TrimRight(strings.TrimSpace(remotePath), "/")
+	parentDir := filepath.Dir(cleanPath)
+	baseName := filepath.Base(cleanPath)
 	logger.InfoExtra(i, fmt.Sprintf("SFTP fallback: %s -> %s", remotePath, extractDir))
 
 	randName := utils.GenerateRandomFileName(12)
@@ -710,7 +675,8 @@ func downloadFallbackSFTP(i Instance, client *goph.Client, remotePath string, ex
 	localArchive := filepath.Join(extractDir, fmt.Sprintf("%s.tar", randName))
 
 	// Uncompressed for speed + maximum compat
-	archiveCmd := fmt.Sprintf("cd / && tar cf %s %s 2>/dev/null; [ -s %s ]", remoteArchive, tarPath, remoteArchive)
+	// cd into parent dir so tar entries use only the basename
+	archiveCmd := fmt.Sprintf("cd %s && tar cf %s %s 2>/dev/null; [ -s %s ]", parentDir, remoteArchive, baseName, remoteArchive)
 	if _, err := client.Run(archiveCmd); err != nil {
 		client.Run(fmt.Sprintf("rm -f %s", remoteArchive))
 		logger.ErrExtra(i, fmt.Sprintf("Failed to archive '%s' on remote", remotePath))

@@ -8,6 +8,8 @@ IS_DEBIAN=false
 IS_ALPINE=false
 IS_SLACK=false
 IS_BSD=false
+IS_FREEBSD=false
+IS_OPENBSD=false
 IS_SUSE=false
 IS_ARCH=false
 
@@ -68,25 +70,37 @@ BSD(){
   IS_BSD=true
 }
 
+FREEBSD(){
+  IS_BSD=true
+  IS_FREEBSD=true
+}
+
+OPENBSD(){
+  IS_BSD=true
+  IS_OPENBSD=true
+}
+
 
 if command -v yum >/dev/null ; then
   RHEL
 elif command -v zypper >/dev/null ; then
   SUSE
 elif command -v apt-get >/dev/null ; then
-  if $( cat /etc/os-release | grep -qi Ubuntu ); then
+  if [ -f /etc/os-release ] && cat /etc/os-release | grep -qi Ubuntu; then
       UBUNTU
   else
       DEBIAN
   fi
 elif command -v apk >/dev/null ; then
   ALPINE
-elif command -v slapt-get >/dev/null || ( cat /etc/os-release | grep -i slackware ) ; then
+elif command -v slapt-get >/dev/null || ( [ -f /etc/os-release ] && cat /etc/os-release | grep -qi slackware ) ; then
   SLACK
 elif command -v pacman >/dev/null ; then
   ARCH
+elif command -v pkg_add >/dev/null && uname -s 2>/dev/null | grep -qi openbsd; then
+  OPENBSD
 elif command -v pkg >/dev/null || command -v pkg_info >/dev/null; then
-    BSD
+  FREEBSD
 fi
 
 if [ -n "$COLOR" ]; then
@@ -150,7 +164,10 @@ ${ECHO} "\n${GREEN}#############HOST INFORMATION############${NC}\n"
 
 HOST=$( DPRINT hostname || DPRINT cat /etc/hostname )
 DOMAIN=$(check_domain)
-OS=$( cat /etc/*-release  | grep PRETTY_NAME | sed 's/PRETTY_NAME=//' | sed 's/"//g' )
+OS=$( cat /etc/*-release 2>/dev/null | grep PRETTY_NAME | sed 's/PRETTY_NAME=//' | sed 's/"//g' )
+if [ -z "$OS" ]; then
+    OS=$( uname -sr 2>/dev/null )
+fi
 if command -v 'ip' > /dev/null ; then
     IP=$( DPRINT ip a | grep -oE '([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}/[[:digit:]]{1,2}' | grep -v '127.0.0.1' )
     GATEWAY=$( DPRINT ip route | grep default | awk '{print $3}' )
@@ -172,7 +189,11 @@ else
 fi
 RAM=$( DPRINT free -h --si | grep Mem | awk '{print $2}' )
 if [ -z "$RAM" ]; then
-    RAM=$( sysctl -n hw.realmem | awk '{ byte =$1 /1024/1024/1024; print byte " GB" }' )
+    if [ $IS_OPENBSD = true ]; then
+        RAM=$( sysctl -n hw.physmem 2>/dev/null | awk '{ byte = $1 /1024/1024/1024; printf "%.1f GB", byte }' )
+    else
+        RAM=$( sysctl -n hw.realmem 2>/dev/null | awk '{ byte = $1 /1024/1024/1024; printf "%.1f GB", byte }' )
+    fi
 fi
 STORAGE=$( DPRINT df -h | grep -E '\s/\s*$' | awk '{print $2}' )
 USERS=$( cat /etc/passwd | grep -vE '(false|nologin|sync)$' | grep -E '/.*sh$' )
@@ -195,8 +216,9 @@ ${ECHO} "${GREEN}#############Listening Ports############${NC}"
 echo ""
 if command -v sockstat >/dev/null; then
     DPRINT sockstat -l | tail -n +3 | grep 'tcp\|udp' | awk '{print $1 " " $2 " " $6 }' | DPRINT column -t
-fi
-if command -v netstat >/dev/null; then
+elif [ $IS_OPENBSD = true ] && command -v netstat >/dev/null; then
+    DPRINT netstat -an -f inet | grep 'LISTEN' | DPRINT column -t
+elif command -v netstat >/dev/null && [ $IS_BSD = false ]; then
     DPRINT netstat -tlpn | tail -n +3 | awk '{print $1 " " $4 " " $6 " " $7}'| DPRINT column -t
 elif command -v ss > /dev/null; then
     DPRINT ss -blunt -p | tail -n +2 | awk '{print $1 " " $5 " " $7}' | DPRINT column -t 
@@ -210,7 +232,8 @@ if [ $IS_ALPINE = true ]; then
 elif [ $IS_SLACK = true ]; then
     SERVICES=$( ls -la /etc/rc.d | grep rwx | awk '{print $9}' ) 
 elif [ $IS_BSD = true ]; then
-    SERVICES=$( cat /etc/rc.conf /etc/rc.conf.d/* | grep -i "_enable" | grep -i "yes" | awk -F "_enable" '{print $1}' )
+    SERVICES=$( cat /etc/rc.conf 2>/dev/null; cat /etc/rc.conf.d/* 2>/dev/null; cat /etc/rc.conf.local 2>/dev/null )
+    SERVICES=$( echo "$SERVICES" | grep -i "_enable\|_flags" | grep -iv "=\"*NO\"*" | awk -F '_enable|_flags' '{print $1}' )
 else
     SERVICES=$( DPRINT systemctl --type=service | grep active | awk '{print $1}' || service --status-all | grep -E '(+|is running)' )
 fi
@@ -513,6 +536,8 @@ checkService()
 
 		if [ "$( DPRINT sockstat -l | grep -i "$serviceGrep" )" ]; then
 			${ECHO} "Active on port(s) ${YELLOW}$(sockstat -l | grep -i "$serviceGrep" | grep -i ":" | awk 'BEGIN {ORS=" and " } {print $6}' | sed 's/\(.*\)and /\1\n/')${NC}\n"
+		elif [ "$( DPRINT netstat -an 2>/dev/null | grep 'LISTEN' | grep -i "$serviceGrep" )" ]; then
+			${ECHO} "Active on port(s) ${YELLOW}$(netstat -an | grep 'LISTEN' | awk 'BEGIN {ORS=" and "} {print $1, $4}' | sed 's/\(.*\)and /\1\n/')${NC}\n"
 		elif [ "$( DPRINT netstat -tulpn | grep -i "$serviceGrep" )" ]; then
 			${ECHO} "Active on port(s) ${YELLOW}$(netstat -tulpn | grep -i "$serviceGrep" | awk 'BEGIN {ORS=" and "} {print $1, $4}' | sed 's/\(.*\)and /\1\n/')${NC}\n"
 		elif [ "$( DPRINT ss -blunt -p | grep -i "$serviceGrep" )" ]; then
@@ -789,7 +814,7 @@ if checkService "$SERVICES"  'postgres' | grep -qi "is on this machine" ; then
         DB_CMD=" sudo -u postgres psql -c \l "
     fi
     if [ "$AUTH" = 1 ]; then
-        DATABASES="$( DPRINT $DB_CMD | grep -vE '^\s(postgres|template0|template1|\s+)\s+\|' | head -n -2 )"
+        DATABASES="$( DPRINT $DB_CMD | grep -vE '^\s(postgres|template0|template1|\s+)\s+\|' | grep -vE '^\s*\(|^\s*$' )"
         if [ "$( echo "$DATABASES" | wc -l )" -gt 2 ]; then
             echo "PostgreSQL Databases"
             ${ECHO} "${ORAG}$DATABASES${NC}\n"
@@ -840,7 +865,7 @@ ${ECHO} "${BLUE}[+] /etc/sudoers and /etc/sudoers.d/*${NC}"
 ${ECHO} "${YELLOW}$SUDOERS${NC}\n"
 ${ECHO} "${YELLOW}$NOAUTHSUDOERS${NC}\n"
 ${ECHO} "${BLUE}[+] Sudo group${NC}"
-${ECHO} "${YELLOW}$SUDOGROUP${NC}\n"
+${ECHO} "${YELLOW}$SUDOGROUP_LINES${NC}\n"
 ${ECHO} "${BLUE}[+] Funny SUIDs${NC}"
 ${ECHO} "${YELLOW}$SUIDS${NC}\n"
 ${ECHO} "${BLUE}[+] World Writeable Files${NC}"
@@ -848,62 +873,81 @@ ${ECHO} "${YELLOW}$WORLDWRITEABLES${NC}\n"
 
 ${ECHO} "\n${GREEN}#############HASHES######################${NC}\n"
 
+# Determine sha256 command
+if command -v sha256sum >/dev/null 2>&1; then
+    SHA256CMD='sha256sum'
+elif command -v sha256 >/dev/null 2>&1; then
+    # BSD sha256 outputs 'SHA256 (file) = hash', -q outputs just the hash
+    SHA256CMD='sha256 -q'
+else
+    SHA256CMD=''
+fi
+
 MOD=$(find /lib/ /lib64/ /lib32/ /usr/lib/ /usr/lib64/ /usr/lib32/ -name "pam_unix.so" 2>/dev/null)
 if [ -z "$MOD" ]; then
     ${ECHO} "${RED}[-] pam_unix.so not found${NC}"
+elif [ -z "$SHA256CMD" ]; then
+    ${ECHO} "${RED}[-] No sha256sum/sha256 command found${NC}"
 else
     for i in $MOD; do
         i=$(echo $i | sed 's/\/pam_unix.so//g')
-        ${ECHO} "${YELLOW}$i/pam_unix.so hash: ${NC}$(sha256sum $i/pam_unix.so | cut -d' ' -f1)""\n"
-        ${ECHO} "${YELLOW}$i/pam_permit.so hash: ${NC}$(sha256sum $i/pam_permit.so | cut -d' ' -f1)""\n"
-        ${ECHO} "${YELLOW}$i/pam_deny.so hash: ${NC}$(sha256sum $i/pam_deny.so | cut -d' ' -f1)""\n"
+        ${ECHO} "${YELLOW}$i/pam_unix.so hash: ${NC}$($SHA256CMD $i/pam_unix.so | cut -d' ' -f1)""\n"
+        ${ECHO} "${YELLOW}$i/pam_permit.so hash: ${NC}$($SHA256CMD $i/pam_permit.so | cut -d' ' -f1)""\n"
+        ${ECHO} "${YELLOW}$i/pam_deny.so hash: ${NC}$($SHA256CMD $i/pam_deny.so | cut -d' ' -f1)""\n"
     done
 fi
 
 NOLOGIN=$(find /bin /sbin /usr -name nologin 2>/dev/null)
 if [ -z "$NOLOGIN" ]; then
     ${ECHO} "${RED}[-] nologin not found${NC}"
-else
+elif [ -n "$SHA256CMD" ]; then
     for i in $NOLOGIN; do
-        ${ECHO} "${YELLOW}$i hash: ${NC}$(sha256sum $i | cut -d' ' -f1)""\n"
+        ${ECHO} "${YELLOW}$i hash: ${NC}$($SHA256CMD $i | cut -d' ' -f1)""\n"
     done
 fi
 
 FALSE=$(find /bin /sbin /usr -name false 2>/dev/null)
 if [ -z "$FALSE" ]; then
     ${ECHO} "${RED}[-] false not found${NC}"
-else
+elif [ -n "$SHA256CMD" ]; then
     for i in $FALSE; do
-        ${ECHO} "${YELLOW}$i hash: ${NC}$(sha256sum $i | cut -d' ' -f1)""\n"
+        ${ECHO} "${YELLOW}$i hash: ${NC}$($SHA256CMD $i | cut -d' ' -f1)""\n"
     done
 fi
 
 TRUE=$(find /bin /sbin /usr -name true 2>/dev/null)
 if [ -z "$TRUE" ]; then
     ${ECHO} "${RED}[-] true not found${NC}"
-else
+elif [ -n "$SHA256CMD" ]; then
     for i in $TRUE; do
-        ${ECHO} "${YELLOW}$i hash: ${NC}$(sha256sum $i | cut -d' ' -f1)""\n"
+        ${ECHO} "${YELLOW}$i hash: ${NC}$($SHA256CMD $i | cut -d' ' -f1)""\n"
     done
 fi
 
 # Process Information
 ${ECHO} "\n${GREEN}#############PROCESS INFORMATION############${NC}\n"
-PROCESS=$( (ps -ef --forest || ps auxw || ps -ef) | tail -n 125)
+PROCESS=$( (ps -ef --forest 2>/dev/null || ps auxw 2>/dev/null || ps -ef 2>/dev/null) | tail -n 125)
 ${ECHO} "${YELLOW}$PROCESS${NC}\n"
 
 # Network Information
 ${ECHO} "\n${GREEN}#############EXTRA NETWORK INFORMATION############${NC}\n"
 ${ECHO} "${BLUE}[+] Routing Table${NC}"
-${ECHO} "${YELLOW}$(route -n)${NC}\n"
+if [ $IS_BSD = true ]; then
+    ${ECHO} "${YELLOW}$(netstat -rn 2>/dev/null)${NC}\n"
+else
+    ${ECHO} "${YELLOW}$(route -n 2>/dev/null)${NC}\n"
+fi
 ${ECHO} "${BLUE}[+] ARP Table${NC}"
-${ECHO} "${YELLOW}$(arp -a)${NC}\n"
+${ECHO} "${YELLOW}$(arp -a 2>/dev/null)${NC}\n"
 
 # Listening Ports
 ${ECHO} "\n${GREEN}#############PORTS############${NC}\n"
 if command -v sockstat >/dev/null ; then
     LIST_CMD="sockstat -l"
     ESTB_CMD="sockstat -46c"
+elif [ $IS_OPENBSD = true ] && command -v netstat >/dev/null ; then
+    LIST_CMD="netstat -an -f inet"
+    ESTB_CMD="netstat -an -f inet"
 elif command -v ss >/dev/null ; then
     LIST_CMD="ss -blunt -p"
     ESTB_CMD="ss -buntp"
@@ -913,12 +957,12 @@ elif command -v netstat >/dev/null ; then
 fi
 
 if [ -z "$LIST_CMD" ]; then
-    ${ECHO} "${RED}[-] No ss, netstat, or sockstat found. ${NC}]"
+    ${ECHO} "${RED}[-] No ss, netstat, or sockstat found. ${NC}"
 else
-    echo "\n${BLUE}[+] Listening Ports${NC}"
+    ${ECHO} "\n${BLUE}[+] Listening Ports${NC}"
     $LIST_CMD
     
-    echo "\n${BLUE}[+] Established Connections${NC}"
+    ${ECHO} "\n${BLUE}[+] Established Connections${NC}"
     $ESTB_CMD
 fi
 

@@ -3,8 +3,10 @@
 # KaliPatriot | TTU CCDC | Landon Byrge
 # Foister is just happy to be here
 
-sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
-setenforce 0 2>/dev/null
+if [ -f /etc/selinux/config ]; then
+    sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
+    setenforce 0 2>/dev/null
+fi
 
 RHEL(){
     yum check-update -y >/dev/null
@@ -59,10 +61,16 @@ ARCH(){
     done
 }
 
-BSD(){
+FREEBSD(){
     pkg update -f >/dev/null
-    for i in "sudo bash net-tools iproute2 sed curl wget bash gcc gzip make procps socat tar tcpdump auditd rsyslog firewall bpftrace traceroute binutils lsof bind-tools e2fsprogs diffutils unzip ca_root_nss python3"; do
-        pkg install -y $i || pkg install $i
+    for i in "sudo bash curl wget gcc gmake socat tcpdump rsyslog binutils lsof bind-tools ca_root_nss python3 ipmitool"; do
+        pkg install -y $i
+    done
+}
+
+OPENBSD(){
+    for i in "bash curl wget gcc gmake socat rsyslog lsof python3"; do
+        pkg_add $i 2>/dev/null
     done
 }
 
@@ -71,19 +79,21 @@ if command -v yum >/dev/null ; then
 elif command -v zypper >/dev/null ; then
   SUSE
 elif command -v apt-get >/dev/null ; then
-  if $( cat /etc/os-release | grep -qi Ubuntu ); then
+  if [ -f /etc/os-release ] && cat /etc/os-release | grep -qi Ubuntu; then
       UBUNTU
   else
       DEBIAN
   fi
 elif command -v apk >/dev/null ; then
   ALPINE
-elif command -v slapt-get >/dev/null || ( cat /etc/os-release | grep -i slackware ) ; then
+elif command -v slapt-get >/dev/null || ( [ -f /etc/os-release ] && cat /etc/os-release | grep -qi slackware ) ; then
   SLACK
 elif command -v pacman >/dev/null ; then
   ARCH
-elif command -v pkg >/dev/null || command -v pkg_info >/dev/null; then
-    BSD
+elif command -v pkg_add >/dev/null && uname -s | grep -qi openbsd; then
+  OPENBSD
+elif command -v pkg >/dev/null; then
+  FREEBSD
 fi
 
 # check our ports
