@@ -31,24 +31,27 @@ printf "${GREEN}[OK]${NC} Running as root (UID: $(id -u))\n"
 REQUIRED_TOOLS="strings grep cat ps find wc sort comm head"
 MISSING_TOOLS=""
 
-printf "\n${BLUE}Checking for required tools...${NC}\n"
 for tool in $REQUIRED_TOOLS; do
-    if command -v $tool >/dev/null 2>&1; then
-        printf "${GREEN}[OK]${NC} $tool found\n"
-    else
+    if ! command -v $tool >/dev/null 2>&1; then
+        if [ -z "$MISSING_TOOLS" ]; then
+            printf "\n${BLUE}Checking for required tools...${NC}\n"
+        fi
         printf "${RED}[MISSING]${NC} $tool not found\n"
         MISSING_TOOLS="$MISSING_TOOLS $tool"
     fi
 done
 
-# Check for optional but recommended tools
-OPTIONAL_TOOLS="netstat ss lsof"
-printf "\n${BLUE}Checking for optional tools...${NC}\n"
+# Check for optional but recommended tools (removed netstat/ss since we don't use them)
+OPTIONAL_TOOLS="lsof"
+MISSING_OPTIONAL=""
+
 for tool in $OPTIONAL_TOOLS; do
-    if command -v $tool >/dev/null 2>&1; then
-        printf "${GREEN}[OK]${NC} $tool found (recommended)\n"
-    else
-        printf "${YELLOW}[WARN]${NC} $tool not found (optional, but recommended for network checks)\n"
+    if ! command -v $tool >/dev/null 2>&1; then
+        if [ -z "$MISSING_OPTIONAL" ]; then
+            printf "\n${BLUE}Checking for optional tools...${NC}\n"
+        fi
+        printf "${YELLOW}[WARN]${NC} $tool not found (optional, but recommended)\n"
+        MISSING_OPTIONAL="$MISSING_OPTIONAL $tool"
     fi
 done
 
@@ -108,13 +111,49 @@ fi
 # 2. Check /etc/ld.so.preload file
 printf "\n${BLUE}[2] Checking /etc/ld.so.preload file...${NC}\n"
 if [ -f /etc/ld.so.preload ]; then
-    printf "${YELLOW}[WARN]${NC} /etc/ld.so.preload exists:\n"
+    printf "${RED}[ALERT]${NC} /etc/ld.so.preload exists:\n"
     $CMD_LS -al /etc/ld.so.preload
-    PRELOAD_CONTENT=$($CMD_CAT /etc/ld.so.preload 2>/dev/null | grep -v '^#' | grep -v '^$')
-    if [ -n "$PRELOAD_CONTENT" ]; then
-        printf "${RED}[ALERT]${NC} /etc/ld.so.preload contains entries:\n${RED}$PRELOAD_CONTENT${NC}\n"
+    
+    # Get file size
+    FILESIZE=$(stat -c%s /etc/ld.so.preload 2>/dev/null || wc -c < /etc/ld.so.preload)
+    
+    if [ "$FILESIZE" -gt 0 ]; then
+        printf "${RED}[ALERT]${NC} File size: ${RED}${FILESIZE} bytes${NC} - File is NOT empty!\n"
+        
+        # Try multiple methods to read the file (rootkit may hook some)
+        printf "${YELLOW}[INFO]${NC} Attempting to read file contents:\n"
+        
+        # Method 1: BusyBox cat
+        printf "\n${YELLOW}Method 1 (BusyBox cat):${NC}\n"
+        PRELOAD_BB=$($CMD_CAT /etc/ld.so.preload 2>/dev/null)
+        if [ -n "$PRELOAD_BB" ]; then
+            printf "${RED}$PRELOAD_BB${NC}\n"
+        else
+            printf "${YELLOW}[WARN]${NC} BusyBox cat returned empty (possible hook)\n"
+        fi
+        
+        # Method 2: Direct shell read
+        printf "\n${YELLOW}Method 2 (Shell read):${NC}\n"
+        if [ -r /etc/ld.so.preload ]; then
+            while IFS= read -r line || [ -n "$line" ]; do
+                printf "${RED}%s${NC}\n" "$line"
+            done < /etc/ld.so.preload
+        fi
+        
+        # Method 3: Hex dump to see raw content
+        printf "\n${YELLOW}Method 3 (Hex dump):${NC}\n"
+        if command -v xxd >/dev/null 2>&1; then
+            xxd /etc/ld.so.preload | head -5
+        elif command -v hexdump >/dev/null 2>&1; then
+            hexdump -C /etc/ld.so.preload | head -5
+        elif command -v od >/dev/null 2>&1; then
+            od -A x -t x1z -v /etc/ld.so.preload | head -5
+        else
+            printf "${YELLOW}[WARN]${NC} No hex dump tool available\n"
+        fi
+        
     else
-        printf "${GREEN}[OK]${NC} /etc/ld.so.preload is empty or only contains comments.\n"
+        printf "${YELLOW}[WARN]${NC} /etc/ld.so.preload exists but is empty (0 bytes).\n"
     fi
 else
     printf "${GREEN}[OK]${NC} /etc/ld.so.preload does not exist.\n"
@@ -178,34 +217,9 @@ else
     printf "${YELLOW}[SKIP]${NC} BusyBox not available, cannot compare process listings.\n"
 fi
 
-# 6. Check for suspicious network connections (Father rootkit backdoor)
-printf "\n${BLUE}[6] Checking for suspicious network connections (backdoor detection)...${NC}\n"
-if command -v netstat >/dev/null 2>&1; then
-    # Look for listening ports that might be backdoors
-    LISTENING=$(netstat -tlnp 2>/dev/null | grep LISTEN || netstat -tln 2>/dev/null | grep LISTEN)
-    if [ -n "$LISTENING" ]; then
-        printf "${YELLOW}[INFO]${NC} Listening TCP ports:\n"
-        echo "$LISTENING" | while read line; do
-            printf "  $line\n"
-        done
-    fi
-else
-    printf "${YELLOW}[WARN]${NC} netstat not available.\n"
-fi
 
-# Check with ss if available
-if command -v ss >/dev/null 2>&1; then
-    SS_LISTEN=$(ss -tlnp 2>/dev/null | grep LISTEN)
-    if [ -n "$SS_LISTEN" ]; then
-        printf "${YELLOW}[INFO]${NC} Listening ports (via ss):\n"
-        echo "$SS_LISTEN" | while read line; do
-            printf "  $line\n"
-        done
-    fi
-fi
-
-# 7. Check for file hiding (Father rootkit hides files with specific prefix)
-printf "\n${BLUE}[7] Checking for file hiding discrepancies...${NC}\n"
+# 6. Check for file hiding (Father rootkit hides files with specific prefix)
+printf "\n${BLUE}[6] Checking for file hiding discrepancies...${NC}\n"
 if [ $BUSYBOX_AVAILABLE -eq 1 ]; then
     # Compare ls output in common directories
     for dir in /tmp /var/tmp /dev/shm /root; do
@@ -222,9 +236,14 @@ if [ $BUSYBOX_AVAILABLE -eq 1 ]; then
                 REGULAR_FILES=$(ls -A "$dir" 2>/dev/null | sort)
                 
                 printf "${YELLOW}Files only visible to BusyBox:${NC}\n"
-                comm -23 <(echo "$BUSYBOX_FILES") <(echo "$REGULAR_FILES") | while read file; do
+                TMPFILE_BB=$(mktemp)
+                TMPFILE_REG=$(mktemp)
+                echo "$BUSYBOX_FILES" > "$TMPFILE_BB"
+                echo "$REGULAR_FILES" > "$TMPFILE_REG"
+                comm -23 "$TMPFILE_BB" "$TMPFILE_REG" | while read file; do
                     printf "  ${RED}$dir/$file${NC}\n"
                 done
+                rm -f "$TMPFILE_BB" "$TMPFILE_REG"
             fi
         fi
     done
@@ -233,8 +252,8 @@ else
     printf "${YELLOW}[SKIP]${NC} BusyBox not available, cannot compare file listings.\n"
 fi
 
-# 8. Check for common Father rootkit library names
-printf "\n${BLUE}[8] Searching for common rootkit library files...${NC}\n"
+# 7. Check for common Father rootkit library names
+printf "\n${BLUE}[7] Searching for common rootkit library files...${NC}\n"
 ROOTKIT_PATTERNS="father libfather libprocesshider lib_preload libhide"
 FOUND_ROOTKIT_FILES=0
 
@@ -256,19 +275,62 @@ if [ $FOUND_ROOTKIT_FILES -eq 0 ]; then
     printf "${GREEN}[OK]${NC} No obvious rootkit library files found.\n"
 fi
 
-# 9. Check for modifications to critical system libraries
-printf "\n${BLUE}[9] Checking for recently modified system libraries...${NC}\n"
-if command -v find >/dev/null 2>&1; then
-    RECENT_LIBS=$(find /lib /usr/lib /lib64 /usr/lib64 -name "*.so*" -mtime -7 2>/dev/null | head -20)
-    if [ -n "$RECENT_LIBS" ]; then
-        printf "${YELLOW}[INFO]${NC} Recently modified libraries (last 7 days):\n"
-        echo "$RECENT_LIBS" | while read lib; do
-            printf "  ${YELLOW}$lib${NC}\n"
-            $CMD_LS -al "$lib" 2>/dev/null
+# 8. Check for suspicious kernel modules (LKM rootkits)
+printf "\n${BLUE}[8] Checking for suspicious kernel modules...${NC}\n"
+if command -v lsmod >/dev/null 2>&1; then
+    # Common rootkit module names
+    ROOTKIT_MODULES="diamorphine reptile suterusu"
+    FOUND_SUSPICIOUS=0
+    
+    for mod in $ROOTKIT_MODULES; do
+        if lsmod | grep -q "^$mod"; then
+            printf "${RED}[ALERT]${NC} Suspicious kernel module detected: ${RED}$mod${NC}\n"
+            FOUND_SUSPICIOUS=1
+        fi
+    done
+    
+    # Check for hidden modules (modules in /sys/module but not in lsmod)
+    if [ -d /sys/module ]; then
+        for moddir in /sys/module/*; do
+            modname=$(basename "$moddir")
+            if ! lsmod | grep -q "^$modname"; then
+                # Skip built-in modules and common false positives
+                if [ -f "$moddir/refcnt" ] && [ ! -f "$moddir/initstate" ]; then
+                    printf "${YELLOW}[WARN]${NC} Module in /sys/module but not in lsmod: ${YELLOW}$modname${NC}\n"
+                    FOUND_SUSPICIOUS=1
+                fi
+            fi
         done
-    else
-        printf "${GREEN}[OK]${NC} No recently modified system libraries found.\n"
     fi
+    
+    if [ $FOUND_SUSPICIOUS -eq 0 ]; then
+        printf "${GREEN}[OK]${NC} No suspicious kernel modules detected.\n"
+    fi
+else
+    printf "${YELLOW}[SKIP]${NC} lsmod not available, cannot check kernel modules.\n"
+fi
+
+# 9. Check for LD_PRELOAD in /proc/*/maps (loaded libraries)
+printf "\n${BLUE}[9] Checking for actively loaded suspicious libraries...${NC}\n"
+FOUND_LOADED=0
+for pid in /proc/[0-9]*; do
+    if [ -f "$pid/maps" ]; then
+        # Look for libraries with suspicious names or in unusual locations
+        SUSPICIOUS=$(grep '\.so' "$pid/maps" 2>/dev/null | grep -E '(father|hide|preload|rootkit|backdoor)' | awk '{print $6}' | sort -u)
+        if [ -n "$SUSPICIOUS" ]; then
+            PROC_NAME=$(cat "$pid/comm" 2>/dev/null || echo "unknown")
+            printf "${RED}[ALERT]${NC} Process ${YELLOW}$(basename $pid)${NC} (${PROC_NAME}) has suspicious library loaded:\n"
+            echo "$SUSPICIOUS" | while read lib; do
+                if [ -n "$lib" ]; then
+                    printf "  ${RED}$lib${NC}\n"
+                    FOUND_LOADED=1
+                fi
+            done
+        fi
+    fi
+done
+if [ $FOUND_LOADED -eq 0 ]; then
+    printf "${GREEN}[OK]${NC} No suspicious libraries currently loaded in processes.\n"
 fi
 
 # 10. Summary and remediation
@@ -281,7 +343,8 @@ printf "  1. Clear /etc/ld.so.preload: echo '' > /etc/ld.so.preload\n"
 printf "  2. Unset LD_PRELOAD: unset LD_PRELOAD\n"
 printf "  3. Remove suspicious .so files found above\n"
 printf "  4. Kill suspicious processes\n"
-printf "  5. Check for persistence mechanisms (cron, systemd, rc.local)\n"
-printf "  6. Restore system binaries from known-good sources\n"
-printf "  7. Run integrity checkers (AIDE, Tripwire, rkhunter)\n\n"
+printf "  5. Remove malicious kernel modules: rmmod <module_name>\n"
+printf "  6. Check for persistence mechanisms (cron, systemd, rc.local, /etc/modules)\n"
+printf "  7. Restore system binaries from known-good sources\n"
+printf "  8. Run integrity checkers (AIDE, Tripwire, rkhunter)\n\n"
 printf "\n${GREEN}[DONE]${NC} LD_PRELOAD rootkit scan completed.\n"
