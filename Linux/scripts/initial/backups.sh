@@ -1,5 +1,6 @@
 #!/bin/sh
 # NightWalk3r | Behnjamin Barlow | TTU CCDC
+# Foister is just happy to be here
 
 # ---- Backup Location ----
 if [ -z "$BCK" ]; then

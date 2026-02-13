@@ -1,6 +1,7 @@
 #!/bin/sh
 # @d_tranman/Nigel Gerald/Nigerald
 # KaliPatriot | TTU CCDC | Landon Byrge
+# Foister is just happy to be here
 
 sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
 setenforce 0 2>/dev/null
