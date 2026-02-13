@@ -602,7 +602,7 @@ sql_test(){
     fi
 
     if [ -n "$SQLDIR" ]; then
-        SQLCONFINFO=$( DPRINT find $SQLDR *sql*.cnf *-server.cnf | sed 's/:user\s*/ ===> user /' | sed 's/bind-address\s*/ ===> bind-address /' )
+        SQLCONFINFO=$( DPRINT find $SQLDIR *sql*.cnf *-server.cnf | sed 's/:user\s*/ ===> user /' | sed 's/bind-address\s*/ ===> bind-address /' )
     fi
 
     if [ -n "$SQLCONFINFO" ]; then
