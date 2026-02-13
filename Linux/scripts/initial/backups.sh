@@ -65,9 +65,21 @@ backup_dir() {
         echo -e "\033[34m[i] Backing up $SRC ...\033[0m"
         ARCHIVE="$BCK/${NAME}_${TIMESTAMP}"
 
+        # Build exclude flag only if backup dir is inside the source dir
+        EXCLUDE_TAR=""
+        EXCLUDE_ZIP=""
+        EXCLUDE_RSYNC=""
+        case "$BCK" in
+            "$SRC"|"$SRC"/*)
+                EXCLUDE_TAR="--exclude=${BCK#/}"
+                EXCLUDE_ZIP="-x ${BCK#/}/*"
+                EXCLUDE_RSYNC="--exclude=${BCK#$SRC/}"
+                ;;
+        esac
+
         # Try tar.gz first (available everywhere), fall back to zip
         if command -v tar >/dev/null 2>&1; then
-            tar czf "${ARCHIVE}.tar.gz" -C / "${SRC#/}" 2>/dev/null
+            tar czf "${ARCHIVE}.tar.gz" $EXCLUDE_TAR -C / "${SRC#/}" 2>/dev/null
             if [ -s "${ARCHIVE}.tar.gz" ]; then
                 echo -e "\033[32m[+] $SRC backed up successfully (tar.gz)\033[0m"
                 return 0
@@ -75,7 +87,7 @@ backup_dir() {
                 rm -f "${ARCHIVE}.tar.gz"
             fi
             # Try uncompressed tar if gzip failed
-            tar cf "${ARCHIVE}.tar" -C / "${SRC#/}" 2>/dev/null
+            tar cf "${ARCHIVE}.tar" $EXCLUDE_TAR -C / "${SRC#/}" 2>/dev/null
             if [ -s "${ARCHIVE}.tar" ]; then
                 echo -e "\033[32m[+] $SRC backed up successfully (tar)\033[0m"
                 return 0
@@ -86,7 +98,7 @@ backup_dir() {
 
         # Fallback to zip if tar somehow failed
         if command -v zip >/dev/null 2>&1; then
-            (cd / && zip -rq "${ARCHIVE}.zip" "${SRC#/}" 2>/dev/null)
+            (cd / && zip -rq "${ARCHIVE}.zip" "${SRC#/}" $EXCLUDE_ZIP 2>/dev/null)
             if [ -s "${ARCHIVE}.zip" ]; then
                 echo -e "\033[32m[+] $SRC backed up successfully (zip)\033[0m"
                 return 0
@@ -95,9 +107,13 @@ backup_dir() {
             fi
         fi
 
-        # Last resort: cp
+        # Last resort: cp/rsync (exclude backup dir if inside source)
         mkdir -p "$BCK/${NAME}_${TIMESTAMP}"
-        cp -a "$SRC/." "$BCK/${NAME}_${TIMESTAMP}/" 2>/dev/null
+        if command -v rsync >/dev/null 2>&1; then
+            rsync -a $EXCLUDE_RSYNC "$SRC/" "$BCK/${NAME}_${TIMESTAMP}/" 2>/dev/null
+        else
+            cp -a "$SRC/." "$BCK/${NAME}_${TIMESTAMP}/" 2>/dev/null
+        fi
         if [ $? -eq 0 ]; then
             echo -e "\033[32m[+] $SRC backed up successfully (copy)\033[0m"
         else

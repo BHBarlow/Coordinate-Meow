@@ -7,8 +7,9 @@ setenforce 0 2>/dev/null
 
 RHEL(){
     yum check-update -y >/dev/null
+    yum install -y epel-release 2>/dev/null
 
-    for i in "sudo net-tools iptables iproute sed curl wget bash gcc gzip make procps socat tar auditd rsyslog tcpdump unhide strace bpftrace traceroute binutils lsof bind-utils e2fsprogs diffutils unzip ca-certificates"; do
+    for i in "sudo net-tools iptables iproute sed curl wget bash gcc gzip make procps socat tar audit rsyslog tcpdump strace bpftrace traceroute binutils lsof bind-utils e2fsprogs diffutils unzip ca-certificates"; do
         yum install -y $i
     done
 }
@@ -23,7 +24,7 @@ SUSE(){
 DEBIAN(){
     apt-get -qq update >/dev/null
 
-ash gcc gzip make procps socat tar auditd rsyslog tcpdump unhide strace debsums bpftrace traceroute binutils lsof dnsutils e2fsprogs diffutils unzip ca-certificates python3"; do    for i in "sudo net-tools iptables iproute2 sed curl wget b
+    for i in "sudo net-tools iptables iproute2 sed curl wget bash gcc gzip make procps socat tar auditd rsyslog tcpdump unhide strace debsums bpftrace traceroute binutils lsof dnsutils e2fsprogs diffutils unzip ca-certificates python3"; do
         apt-get -qq install $i -y
     done
 }

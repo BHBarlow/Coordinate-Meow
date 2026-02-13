@@ -139,10 +139,12 @@ func extractTarReader(tarReader *tar.Reader, destDir string) error {
 			if err != nil {
 				return fmt.Errorf("failed to create file '%s': %w", target, err)
 			}
-			if _, err := io.Copy(outFile, tarReader); err != nil {
+			bw := bufio.NewWriterSize(outFile, 64*1024)
+			if _, err := io.Copy(bw, tarReader); err != nil {
 				outFile.Close()
 				return fmt.Errorf("failed to write file '%s': %w", target, err)
 			}
+			bw.Flush()
 			outFile.Close()
 		case tar.TypeSymlink:
 			os.Remove(target)

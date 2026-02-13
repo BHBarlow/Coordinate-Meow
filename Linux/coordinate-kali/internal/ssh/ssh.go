@@ -440,19 +440,18 @@ func streamUploadFile(client *goph.Client, localFile string, remotePath string) 
 		return fmt.Errorf("failed to stat local file: %w", err)
 	}
 
-	// Determine if remotePath is a directory (ends with /) or full path
-	remoteFile := remotePath
-	if strings.HasSuffix(remotePath, "/") {
-		remoteFile = remotePath + filepath.Base(localFile)
-	}
-
-	// Remote: create parent dir and cat stdin to file, preserve executable bit
+	// Remote: preserve executable bit
 	perm := "644"
 	if info.Mode()&0111 != 0 {
 		perm = "755"
 	}
-	remoteCmd := fmt.Sprintf("mkdir -p \"$(dirname '%s')\" && cat > '%s' && chmod %s '%s'",
-		remoteFile, remoteFile, perm, remoteFile)
+
+	// Let the remote shell figure out if dest is a directory.
+	// If /root is a dir → writes to /root/meow. If /root/meow is a path → writes there.
+	localName := filepath.Base(localFile)
+	remoteCmd := fmt.Sprintf(
+		"d='%s'; n='%s'; if [ -d \"$d\" ]; then d=\"$d/$n\"; fi; mkdir -p \"$(dirname \"$d\")\" && cat > \"$d\" && chmod %s \"$d\"",
+		remotePath, localName, perm)
 	if err := session.Start(remoteCmd); err != nil {
 		return fmt.Errorf("failed to start remote write: %w", err)
 	}
@@ -479,6 +478,20 @@ func streamUploadFile(client *goph.Client, localFile string, remotePath string) 
 	return nil
 }
 
+// probeRemote checks what archiving tools exist on the remote. Called once per
+// host so we never waste time on fallback methods we know will fail.
+func probeRemote(client *goph.Client) (hasTar, hasGzip bool) {
+	out, err := client.Run("command -v tar >/dev/null 2>&1 && echo TAR; command -v gzip >/dev/null 2>&1 && echo GZIP")
+	if err != nil {
+		// 'command' builtin may not exist (old sh); try 'which'
+		out, _ = client.Run("which tar >/dev/null 2>&1 && echo TAR; which gzip >/dev/null 2>&1 && echo GZIP")
+	}
+	s := string(out)
+	hasTar = strings.Contains(s, "TAR")
+	hasGzip = strings.Contains(s, "GZIP")
+	return
+}
+
 func DownloadRemoteDirs(i Instance, client *goph.Client) {
 	hostname := i.IP
 	if i.Hostname != "" {
@@ -490,85 +503,161 @@ func DownloadRemoteDirs(i Instance, client *goph.Client) {
 		return
 	}
 
-	var wg sync.WaitGroup
+	// Probe remote capabilities once — avoids repeated failed fallback attempts
+	hasTar, hasGzip := probeRemote(client)
+	logger.Debug(fmt.Sprintf("Remote probe %s: tar=%v gzip=%v", i.IP, hasTar, hasGzip))
+
+	if !hasTar {
+		// No tar on remote — SFTP per entry (rare: all target OSes have tar)
+		logger.InfoExtra(i, "No tar on remote, falling back to SFTP per entry")
+		var wg sync.WaitGroup
+		for _, entry := range *DownloadDirs {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			wg.Add(1)
+			go func(e string) {
+				defer wg.Done()
+				remote, extractDir := parseDownloadEntry(e, localBase)
+				downloadFallbackSFTP(i, client, remote, extractDir)
+			}(entry)
+		}
+		wg.Wait()
+		return
+	}
+
+	// Partition: entries without ";" get batched into ONE tar stream (fastest).
+	// Entries with ";" (custom local dest) stream individually.
+	var batchRemote []string
+	type customEntry struct{ remote, extractDir string }
+	var customs []customEntry
+
 	for _, entry := range *DownloadDirs {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue
 		}
+		if idx := strings.Index(entry, ";"); idx != -1 {
+			remote := strings.TrimSpace(entry[:idx])
+			localDest := strings.TrimSpace(entry[idx+1:])
+			var ed string
+			if filepath.IsAbs(localDest) {
+				ed = localDest
+			} else {
+				ed = filepath.Join(localBase, localDest)
+			}
+			os.MkdirAll(ed, 0755)
+			customs = append(customs, customEntry{remote, ed})
+		} else {
+			batchRemote = append(batchRemote, entry)
+		}
+	}
 
+	// Batch all default-dest paths into ONE tar stream over ONE SSH session.
+	// e.g. -D /etc/ssh -D /var/log -D /home → one cmd: cd / && tar cf - etc/ssh var/log home
+	if len(batchRemote) > 0 {
+		tarPaths := make([]string, len(batchRemote))
+		for j, p := range batchRemote {
+			tarPaths[j] = strings.TrimPrefix(strings.TrimSpace(p), "/")
+		}
+		allPaths := strings.Join(tarPaths, " ")
+		logger.InfoExtra(i, fmt.Sprintf("Batch downloading %d paths -> %s", len(batchRemote), localBase))
+
+		// Uncompressed first — fastest on LAN (no CPU overhead on either side)
+		cmd := fmt.Sprintf("cd / && tar cf - %s 2>/dev/null", allPaths)
+		if err := streamTarOverSSH(client, cmd, localBase, false); err == nil {
+			logger.InfoExtra(i, fmt.Sprintf("Batch download complete (%d paths)", len(batchRemote)))
+		} else {
+			logger.Debug(fmt.Sprintf("Batch uncompressed failed: %s", err))
+			if hasGzip {
+				cmd = fmt.Sprintf("cd / && tar cf - %s 2>/dev/null | gzip", allPaths)
+				if err := streamTarOverSSH(client, cmd, localBase, true); err == nil {
+					logger.InfoExtra(i, fmt.Sprintf("Batch download complete (%d paths, gzipped)", len(batchRemote)))
+				} else {
+					logger.Debug(fmt.Sprintf("Batch gzip failed: %s — per-entry fallback", err))
+					batchFallbackIndividual(i, client, batchRemote, localBase, hasGzip)
+				}
+			} else {
+				batchFallbackIndividual(i, client, batchRemote, localBase, hasGzip)
+			}
+		}
+	}
+
+	// Custom-dest entries: concurrent, one stream each
+	if len(customs) > 0 {
+		var wg sync.WaitGroup
+		for _, ce := range customs {
+			wg.Add(1)
+			go func(remote, extractDir string) {
+				defer wg.Done()
+				downloadSingleStream(i, client, remote, extractDir, hasGzip)
+			}(ce.remote, ce.extractDir)
+		}
+		wg.Wait()
+	}
+}
+
+// parseDownloadEntry splits "remote;local" and resolves the local extraction dir.
+func parseDownloadEntry(entry string, localBase string) (remotePath, extractDir string) {
+	remotePath = strings.TrimSpace(entry)
+	if idx := strings.Index(entry, ";"); idx != -1 {
+		remotePath = strings.TrimSpace(entry[:idx])
+		localDest := strings.TrimSpace(entry[idx+1:])
+		if filepath.IsAbs(localDest) {
+			extractDir = localDest
+		} else {
+			extractDir = filepath.Join(localBase, localDest)
+		}
+	} else {
+		extractDir = localBase
+	}
+	os.MkdirAll(extractDir, 0755)
+	return
+}
+
+// batchFallbackIndividual streams each path one-by-one when the batch tar fails.
+func batchFallbackIndividual(i Instance, client *goph.Client, paths []string, localBase string, hasGzip bool) {
+	var wg sync.WaitGroup
+	for _, p := range paths {
 		wg.Add(1)
-		go func(entry string) {
+		go func(remote string) {
 			defer wg.Done()
-			downloadSingleDir(i, client, entry, localBase)
-		}(entry)
+			downloadSingleStream(i, client, remote, localBase, hasGzip)
+		}(p)
 	}
 	wg.Wait()
 }
 
-func downloadSingleDir(i Instance, client *goph.Client, entry string, localBase string) {
-	// Support remote;local syntax: -D /etc/ssh;/var/backups/ssh
-	remotePath := entry
-	localDest := ""
-	if idx := strings.Index(entry, ";"); idx != -1 {
-		remotePath = strings.TrimSpace(entry[:idx])
-		localDest = strings.TrimSpace(entry[idx+1:])
-	}
+// downloadSingleStream downloads one remote path via streaming tar.
+// Skips methods known unavailable from probe — no wasted attempts.
+func downloadSingleStream(i Instance, client *goph.Client, remotePath string, extractDir string, hasGzip bool) {
+	tarPath := strings.TrimPrefix(strings.TrimSpace(remotePath), "/")
+	logger.InfoExtra(i, fmt.Sprintf("Downloading %s -> %s", remotePath, extractDir))
 
-	// Determine extraction target
-	var extractDir string
-	if localDest != "" && filepath.IsAbs(localDest) {
-		extractDir = localDest
-	} else if localDest != "" {
-		extractDir = filepath.Join(localBase, localDest)
-	} else {
-		extractDir = localBase
-	}
-	if err := os.MkdirAll(extractDir, 0755); err != nil {
-		logger.ErrExtra(i, fmt.Sprintf("Failed to create extract dir '%s': %s", extractDir, err))
+	// 1) Uncompressed tar — fastest on LAN, works everywhere tar exists
+	// Uses cd / instead of -C / for maximum compat (busybox, BSD, GNU)
+	cmd := fmt.Sprintf("cd / && tar cf - %s 2>/dev/null", tarPath)
+	if err := streamTarOverSSH(client, cmd, extractDir, false); err == nil {
+		logger.InfoExtra(i, fmt.Sprintf("Downloaded %s", remotePath))
 		return
 	}
 
-	tarPath := strings.TrimPrefix(remotePath, "/")
-
-	// Try streaming tar directly over SSH — no temp files on remote, download
-	// starts immediately as tar runs. Falls back to file-based if streaming fails.
-	// Order: tar.gz stream → tar stream → file-based fallback
-
-	// 1) Stream tar.gz directly over SSH stdout
-	logger.InfoExtra(i, fmt.Sprintf("Downloading %s -> %s (streaming)", remotePath, extractDir))
-	streamCmd := fmt.Sprintf("tar czf - -C / %s 2>/dev/null", tarPath)
-	if err := streamTarOverSSH(client, streamCmd, extractDir, true); err == nil {
-		logger.InfoExtra(i, fmt.Sprintf("Successfully downloaded %s -> %s", remotePath, extractDir))
-		return
-	} else {
-		logger.Debug(fmt.Sprintf("Streaming tar.gz failed for '%s': %s, trying pipe...", remotePath, err))
+	// 2) Compressed — only if gzip exists (probe told us)
+	if hasGzip {
+		cmd = fmt.Sprintf("cd / && tar cf - %s 2>/dev/null | gzip", tarPath)
+		if err := streamTarOverSSH(client, cmd, extractDir, true); err == nil {
+			logger.InfoExtra(i, fmt.Sprintf("Downloaded %s (gzip)", remotePath))
+			return
+		}
 	}
 
-	// 2) Stream tar piped through gzip (some tars don't support -z)
-	streamCmd = fmt.Sprintf("tar cf - -C / %s 2>/dev/null | gzip 2>/dev/null", tarPath)
-	if err := streamTarOverSSH(client, streamCmd, extractDir, true); err == nil {
-		logger.InfoExtra(i, fmt.Sprintf("Successfully downloaded %s -> %s", remotePath, extractDir))
-		return
-	} else {
-		logger.Debug(fmt.Sprintf("Streaming tar|gzip failed for '%s': %s, trying uncompressed...", remotePath, err))
-	}
-
-	// 3) Stream uncompressed tar (no gzip at all)
-	streamCmd = fmt.Sprintf("tar cf - -C / %s 2>/dev/null", tarPath)
-	if err := streamTarOverSSH(client, streamCmd, extractDir, false); err == nil {
-		logger.InfoExtra(i, fmt.Sprintf("Successfully downloaded %s -> %s", remotePath, extractDir))
-		return
-	} else {
-		logger.Debug(fmt.Sprintf("Streaming uncompressed tar failed for '%s': %s, trying file-based fallback...", remotePath, err))
-	}
-
-	// 4) File-based fallback (if streaming doesn't work — weird shells, etc.)
-	downloadFallback(i, client, remotePath, tarPath, extractDir)
+	// 3) SFTP file-based fallback — last resort
+	downloadFallbackSFTP(i, client, remotePath, extractDir)
 }
 
-// streamTarOverSSH runs a tar command on the remote and pipes stdout directly
-// into a local tar extractor. No temp files on either side.
+// streamTarOverSSH pipes a remote tar command's stdout directly into a local
+// tar extractor. 64KB buffered I/O for throughput. No temp files anywhere.
 func streamTarOverSSH(client *goph.Client, remoteCmd string, extractDir string, isGzipped bool) error {
 	session, err := client.NewSession()
 	if err != nil {
@@ -585,67 +674,58 @@ func streamTarOverSSH(client *goph.Client, remoteCmd string, extractDir string, 
 		return fmt.Errorf("failed to start command: %w", err)
 	}
 
+	// 64KB buffered reader — reduces syscall overhead on the SSH channel
+	buffered := bufio.NewReaderSize(stdout, 64*1024)
+
 	var extractErr error
 	if isGzipped {
-		extractErr = utils.ExtractTarGzFromReader(stdout, extractDir)
+		extractErr = utils.ExtractTarGzFromReader(buffered, extractDir)
 	} else {
-		extractErr = utils.ExtractTarFromReader(stdout, extractDir)
+		extractErr = utils.ExtractTarFromReader(buffered, extractDir)
 	}
 
-	// Wait for session to finish regardless of extract result
 	sessionErr := session.Wait()
-
 	if extractErr != nil {
 		return fmt.Errorf("extraction error: %w", extractErr)
 	}
-	// tar may exit non-zero on permission errors but the data is fine — only
-	// fail if we got zero bytes (extractErr would have caught that)
+	// tar exits non-zero on permission errors but data is fine — ignore
 	_ = sessionErr
 	return nil
 }
 
-// downloadFallback is the old file-based approach: tar to file, SFTP download, extract locally
-func downloadFallback(i Instance, client *goph.Client, remotePath string, tarPath string, extractDir string) {
-	logger.InfoExtra(i, fmt.Sprintf("Downloading %s -> %s (file-based fallback)", remotePath, extractDir))
+// downloadFallbackSFTP is the last-resort: tar to temp file on remote, SFTP
+// download, extract locally. Only used when streaming completely fails.
+func downloadFallbackSFTP(i Instance, client *goph.Client, remotePath string, extractDir string) {
+	tarPath := strings.TrimPrefix(strings.TrimSpace(remotePath), "/")
+	logger.InfoExtra(i, fmt.Sprintf("SFTP fallback: %s -> %s", remotePath, extractDir))
 
 	randName := utils.GenerateRandomFileName(12)
-	remoteArchive := fmt.Sprintf("/tmp/%s.tar.gz", randName)
-	localArchive := filepath.Join(extractDir, fmt.Sprintf("%s.tar.gz", randName))
+	remoteArchive := fmt.Sprintf("/tmp/%s.tar", randName)
+	localArchive := filepath.Join(extractDir, fmt.Sprintf("%s.tar", randName))
 
-	archiveCmd := fmt.Sprintf("tar czf %s -C / %s 2>/dev/null; [ -s %s ]", remoteArchive, tarPath, remoteArchive)
+	// Uncompressed for speed + maximum compat
+	archiveCmd := fmt.Sprintf("cd / && tar cf %s %s 2>/dev/null; [ -s %s ]", remoteArchive, tarPath, remoteArchive)
 	if _, err := client.Run(archiveCmd); err != nil {
-		// Try uncompressed
 		client.Run(fmt.Sprintf("rm -f %s", remoteArchive))
-		remoteArchive = fmt.Sprintf("/tmp/%s.tar", randName)
-		localArchive = filepath.Join(extractDir, fmt.Sprintf("%s.tar", randName))
-		archiveCmd = fmt.Sprintf("tar cf %s -C / %s 2>/dev/null; [ -s %s ]", remoteArchive, tarPath, remoteArchive)
-		if _, err := client.Run(archiveCmd); err != nil {
-			client.Run(fmt.Sprintf("rm -f /tmp/%s.*", randName))
-			logger.ErrExtra(i, fmt.Sprintf("Failed to archive '%s' on remote", remotePath))
-			return
-		}
+		logger.ErrExtra(i, fmt.Sprintf("Failed to archive '%s' on remote", remotePath))
+		return
 	}
 
-	err := client.Download(remoteArchive, localArchive)
-	if err != nil {
-		logger.ErrExtra(i, fmt.Sprintf("Failed to download archive for '%s': %s", remotePath, err))
+	if err := client.Download(remoteArchive, localArchive); err != nil {
+		logger.ErrExtra(i, fmt.Sprintf("SFTP download failed for '%s': %s", remotePath, err))
 		client.Run(fmt.Sprintf("rm -f %s", remoteArchive))
 		os.Remove(localArchive)
 		return
 	}
 	client.Run(fmt.Sprintf("rm -f %s", remoteArchive))
 
-	extrErr := utils.ExtractTarGz(localArchive, extractDir)
-	if extrErr != nil {
-		extrErr = utils.ExtractTar(localArchive, extractDir)
-	}
-	if extrErr != nil {
-		logger.ErrExtra(i, fmt.Sprintf("Failed to extract archive for '%s': %s (keeping archive)", remotePath, extrErr))
+	if err := utils.ExtractTar(localArchive, extractDir); err != nil {
+		logger.ErrExtra(i, fmt.Sprintf("Extract failed for '%s': %s (keeping archive)", remotePath, err))
 		return
 	}
 
 	os.Remove(localArchive)
-	logger.InfoExtra(i, fmt.Sprintf("Successfully downloaded %s -> %s", remotePath, extractDir))
+	logger.InfoExtra(i, fmt.Sprintf("Downloaded %s (SFTP fallback)", remotePath))
 }
 
 func Upload(client *goph.Client, localPath string, remotePath string) error {
