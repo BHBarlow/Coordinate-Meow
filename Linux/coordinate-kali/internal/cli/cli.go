@@ -43,7 +43,7 @@ func Init() {
 }
 
 func InputCheck() error {
-	if (len(Scripts) == 0 && len(Commands) == 0 && *CreateConfig == "" && len(*DownloadDirs) == 0 && len(*UploadFiles) == 0) || ((*Usernames == "" || *Targets == "") && !*UseConfig) {
+	if (len(Scripts) == 0 && len(Commands) == 0 && *CreateConfig == "" && *ConfigOnly == "" && len(*DownloadDirs) == 0 && len(*UploadFiles) == 0) || ((*Usernames == "" || *Targets == "") && !*UseConfig) {
 		return fmt.Errorf("Missing target(s), script(s)/command(s), and/or username(s).")
 	}
 
@@ -52,7 +52,7 @@ func InputCheck() error {
 		return fmt.Errorf("Cannot specify both scripts and commands. Use either scripts or --command flag.")
 	}
 
-	if *CreateConfig != "" {
+	if *CreateConfig != "" && *ConfigOnly == "" {
 		*Environment = fmt.Sprintf("ROOTPASS=%s", *CreateConfig)
 		if *IgnoreUsers != "" {
 			*Environment += fmt.Sprintf(";IGNOREUSERS=%s", *IgnoreUsers)

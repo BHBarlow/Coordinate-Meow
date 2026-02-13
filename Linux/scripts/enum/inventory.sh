@@ -389,6 +389,112 @@ else
     ${ECHO} "${YELLOW}[-] Ansible not installed${NC}"
 fi
 
+# Check if this machine is MANAGED BY Ansible (regardless of whether ansible is installed locally)
+${ECHO} "\n${GREEN}#############ANSIBLE MANAGED NODE CHECK############${NC}\n"
+
+ANSIBLE_MANAGED=false
+
+# Check for Ansible temp/cache directories left by remote execution
+ANSIBLE_TMP_DIRS=""
+for homedir in /root /home/*; do
+    if [ -d "$homedir/.ansible" ]; then
+        ANSIBLE_TMP_DIRS="$ANSIBLE_TMP_DIRS $homedir/.ansible"
+    fi
+done
+if [ -d /tmp/.ansible ]; then
+    ANSIBLE_TMP_DIRS="$ANSIBLE_TMP_DIRS /tmp/.ansible"
+fi
+
+if [ -n "$ANSIBLE_TMP_DIRS" ]; then
+    ANSIBLE_MANAGED=true
+    ${ECHO} "${BLUE}[+] Ansible temp/cache directories found (indicates remote management):${NC}"
+    for d in $ANSIBLE_TMP_DIRS; do
+        ${ECHO} "${ORAG}  $d${NC}"
+        DPRINT ls -la "$d" 2>/dev/null | head -n 10 | while read -r line; do
+            ${ECHO} "${ORAG}    $line${NC}"
+        done
+    done
+    echo ""
+fi
+
+# Check for Ansible local facts directory
+if [ -d /etc/ansible/facts.d ]; then
+    ANSIBLE_MANAGED=true
+    ${ECHO} "${BLUE}[+] Ansible local facts directory exists (/etc/ansible/facts.d):${NC}"
+    FACTS_FILES=$( DPRINT ls -la /etc/ansible/facts.d/ 2>/dev/null )
+    if [ -n "$FACTS_FILES" ]; then
+        ${ECHO} "${ORAG}$FACTS_FILES${NC}\n"
+    fi
+fi
+
+# Check authorized_keys for Ansible controller keys
+ANSIBLE_KEYS=""
+for keyfile in /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys; do
+    if [ -f "$keyfile" ]; then
+        FOUND=$( grep -i 'ansible' "$keyfile" 2>/dev/null )
+        if [ -n "$FOUND" ]; then
+            ANSIBLE_KEYS="$ANSIBLE_KEYS\n  $keyfile:\n$FOUND"
+        fi
+    fi
+done
+
+if [ -n "$ANSIBLE_KEYS" ]; then
+    ANSIBLE_MANAGED=true
+    ${ECHO} "${BLUE}[+] SSH authorized_keys with Ansible references:${NC}"
+    ${ECHO} "${ORAG}$ANSIBLE_KEYS${NC}\n"
+fi
+
+# Check auth logs for recent Ansible SSH connections
+ANSIBLE_LOG_HITS=""
+if [ -f /var/log/auth.log ]; then
+    ANSIBLE_LOG_HITS=$( grep -i 'ansible' /var/log/auth.log 2>/dev/null | tail -n 10 )
+elif [ -f /var/log/secure ]; then
+    ANSIBLE_LOG_HITS=$( grep -i 'ansible' /var/log/secure 2>/dev/null | tail -n 10 )
+fi
+
+if [ -n "$ANSIBLE_LOG_HITS" ]; then
+    ANSIBLE_MANAGED=true
+    ${ECHO} "${BLUE}[+] Recent Ansible activity in auth logs:${NC}"
+    ${ECHO} "${ORAG}$ANSIBLE_LOG_HITS${NC}\n"
+fi
+
+# Check for AnsiballZ or ansible module remnants in /tmp
+ANSIBLE_TMP_MODULES=$( DPRINT find /tmp -maxdepth 2 -name 'AnsiballZ_*' -o -name 'ansible-tmp-*' 2>/dev/null | head -n 10 )
+if [ -n "$ANSIBLE_TMP_MODULES" ]; then
+    ANSIBLE_MANAGED=true
+    ${ECHO} "${BLUE}[+] Ansible module remnants in /tmp:${NC}"
+    ${ECHO} "${ORAG}$ANSIBLE_TMP_MODULES${NC}\n"
+fi
+
+# Check for ansible user account
+ANSIBLE_USER=$( grep -E '^ansible:' /etc/passwd 2>/dev/null )
+if [ -n "$ANSIBLE_USER" ]; then
+    ANSIBLE_MANAGED=true
+    ${ECHO} "${BLUE}[+] Dedicated 'ansible' user exists:${NC}"
+    ${ECHO} "${ORAG}$ANSIBLE_USER${NC}"
+    # Check if ansible user has sudo
+    ANSIBLE_SUDO=$( DPRINT grep -rE '^\s*ansible\s' /etc/sudoers /etc/sudoers.d/* 2>/dev/null )
+    if [ -n "$ANSIBLE_SUDO" ]; then
+        ${ECHO} "${YELLOW}  Ansible sudoers entry: $ANSIBLE_SUDO${NC}"
+    fi
+    echo ""
+fi
+
+# Check for ansible-pull timer/cron (machine pulls its own config)
+ANSIBLE_PULL_CRON=$( DPRINT grep -r 'ansible-pull\|ansible_pull' /etc/cron* /var/spool/cron* 2>/dev/null )
+ANSIBLE_PULL_TIMER=$( DPRINT systemctl list-timers --all 2>/dev/null | grep -i ansible )
+if [ -n "$ANSIBLE_PULL_CRON" ] || [ -n "$ANSIBLE_PULL_TIMER" ]; then
+    ANSIBLE_MANAGED=true
+    ${ECHO} "${BLUE}[+] Ansible-pull scheduled tasks found:${NC}"
+    [ -n "$ANSIBLE_PULL_CRON" ] && ${ECHO} "${ORAG}Cron: $ANSIBLE_PULL_CRON${NC}"
+    [ -n "$ANSIBLE_PULL_TIMER" ] && ${ECHO} "${ORAG}Timer: $ANSIBLE_PULL_TIMER${NC}"
+    echo ""
+fi
+
+if [ "$ANSIBLE_MANAGED" = false ]; then
+    ${ECHO} "${YELLOW}[-] No signs of Ansible remote management detected${NC}"
+fi
+
 APACHE2=false
 NGINX=false
 checkService()

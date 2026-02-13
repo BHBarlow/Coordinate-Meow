@@ -46,7 +46,7 @@ func main() {
 		printBrokenHosts()
 	}
 
-	if *CreateConfig != "" {
+	if *CreateConfig != "" || *ConfigOnly != "" {
 		logger.Debug("CreateConfig flag detected. Saving config...")
 		config.SaveConfig()
 	}

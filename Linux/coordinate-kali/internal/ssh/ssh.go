@@ -53,6 +53,12 @@ func SsherWrapper(i Instance, client *goph.Client) {
 		DownloadRemoteDirs(i, client)
 	}
 
+	// Save credentials to config when --config-only is set
+	if *ConfigOnly != "" {
+		logger.Debug(fmt.Sprintf("ConfigOnly: saving credentials for %s (user: %s)", i.IP, i.Username))
+		UpdateEntry(ConfigEntry{IP: i.IP, Username: i.Username, Password: *ConfigOnly})
+	}
+
 	// If only uploading/downloading (no scripts or commands), we're done
 	if len(Commands) == 0 && len(Scripts) == 0 {
 		TotalRuns++

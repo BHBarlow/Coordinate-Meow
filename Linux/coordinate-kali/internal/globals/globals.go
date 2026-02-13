@@ -51,6 +51,7 @@ var (
 	IgnoreUsers	    = flag.StringP("ignore-users", "I", "", "Ignore users")
 	AllPass         = flag.StringP("all-pass", "A", "", "Set the same password for all users (except root and ignored users)")
 	UseConfig       = flag.BoolP("use-config", "U", false, "Use config.json. This has no error handling. Have fun.")
+	ConfigOnly      = flag.StringP("CO", "O", "", "Create a config from existing credentials without running password.sh. Pass the root password as value.")
 	Command         = flag.StringArrayP("command", "x", []string{}, "Execute command(s) directly instead of scripts")
 	PrivKey         = ""
 	DownloadPaths   = []string{}
