@@ -346,7 +346,7 @@ while true; do
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             -o ConnectTimeout=5 \
-            -q "$USERNAME@$IP" "$REMOTE_SCRIPT" 2>/dev/null)
+            -q "$USERNAME@$IP" "bash -s" <<< "$REMOTE_SCRIPT" 2>/dev/null)
         
         EXIT_CODE=$?
 
