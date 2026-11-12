@@ -2,20 +2,43 @@
 # thanks @d_tranman/Nigel Gerald/Nigerald
 # KaliPatriot was here, but can someone tell me what the hell is going on here?
 # Foister is just happy to be here
+#
+# Default-deny firewall (iptables on Linux, pf on the BSDs).
+# Run through coordinate with -E, e.g.:
+#   coordinate -t HOSTS -u root -p PASS \
+#     -E DISPATCHER=10.0.0.5 -E LOCALNETWORK=10.0.0.0/24 -E CCSHOST=1.2.3.4 \
+#     -E ALLOW_TCP=80,443 Linux/scripts/harden/apply_fw_DANGER.sh
+#
+# Env vars:
+#   DISPATCHER    (required) host(s) allowed in on SSH (comma list ok)
+#   LOCALNETWORK  (required) network(s) allowed in/out (comma list ok)
+#   CCSHOST       scoring/CCS host(s) allowed in/out; required unless NOTNATS=1
+#   ALLOW_TCP     comma list of TCP ports open to ANY source (scored services)
+#   ALLOW_UDP     comma list of UDP ports open to ANY source (e.g. 53)
+#   KEEP_V6=1     do not lock down IPv6 (default: IPv6 is dropped except lo)
+#   BCK           backup dir (default /root/.cache)
+#
+# A safety cron flushes the firewall in ~4-5 minutes and every 5 minutes after.
+# Run Linux/scripts/misc/remove_fw_cron.sh once you confirm you're not locked out.
 
 ipt=$(command -v iptables || command -v /sbin/iptables || command -v /usr/sbin/iptables)
-IS_BSD=false
+ip6t=$(command -v ip6tables || command -v /sbin/ip6tables || command -v /usr/sbin/ip6tables)
+ipts=$(command -v iptables-save || command -v /sbin/iptables-save || command -v /usr/sbin/iptables-save)
 
-if command -v pkg >/dev/null || command -v pkg_info >/dev/null; then
-    IS_BSD=true
-fi
+case "$(uname -s)" in
+    *BSD|DragonFly) IS_BSD=true ;;
+    *) IS_BSD=false ;;
+esac
 
 ALLOW() {
     if [ "$IS_BSD" = true ]; then
         pfctl -d
         pfctl -F all
     else
-        $ipt -P INPUT ACCEPT; $ipt -P OUTPUT ACCEPT ; $ipt -P FORWARD ACCEPT ; $ipt -F; $ipt -X
+        $ipt -P INPUT ACCEPT; $ipt -P OUTPUT ACCEPT; $ipt -P FORWARD ACCEPT; $ipt -F; $ipt -X
+        if [ -n "$ip6t" ] && [ -z "$KEEP_V6" ]; then
+            $ip6t -P INPUT ACCEPT; $ip6t -P OUTPUT ACCEPT; $ip6t -P FORWARD ACCEPT; $ip6t -F; $ip6t -X
+        fi
     fi
 }
 
@@ -26,6 +49,11 @@ CHECKERR() {
         exit 1
     fi
 }
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Must run as root (use coordinate -S or log in as root)."
+    exit 1
+fi
 
 if [ -z "$ipt" ] && [ "$IS_BSD" = false ]; then
     echo "NO IPTABLES ON THIS SYSTEM, NOT BSD, GOOD LUCK"
@@ -47,53 +75,74 @@ if [ -z "$CCSHOST" ] && [ -z "$NOTNATS" ]; then
     exit 1
 fi
 
-if [ -z "$BCK" ]; then
-    BCK="/root/.cache"
-else 
-    mkdir -p $BCK 2>/dev/null
-fi
+BCK="${BCK:-/root/.cache}"
+mkdir -p "$BCK" 2>/dev/null
 
-if [ -f /etc/ufw/ufw.conf ]; then
+if [ -f /etc/ufw/ufw.conf ] && command -v ufw >/dev/null 2>&1; then
     ufw disable
 fi
 
-if [ -f /etc/firewalld/firewalld.conf ]; then
+if [ -f /etc/firewalld/firewalld.conf ] && command -v systemctl >/dev/null 2>&1; then
     systemctl stop firewalld
     systemctl disable firewalld
 fi
 
+# ── Safety flush cron ───────────────────────────────────────────────────────
 FW_FLUSH_COMMENT="# COORD_FW_SAFETY_FLUSH"
 if [ "$IS_BSD" = true ]; then
-    FW_FLUSH_CMD="pfctl -d; pfctl -F all $FW_FLUSH_COMMENT"
+    FW_FLUSH_CMD="pfctl -d; pfctl -F all"
 else
-    FW_FLUSH_CMD="$ipt -P INPUT ACCEPT; $ipt -P OUTPUT ACCEPT; $ipt -P FORWARD ACCEPT; $ipt -F; $ipt -X $FW_FLUSH_COMMENT"
+    FW_FLUSH_CMD="$ipt -P INPUT ACCEPT; $ipt -P OUTPUT ACCEPT; $ipt -P FORWARD ACCEPT; $ipt -F; $ipt -X"
+    if [ -n "$ip6t" ] && [ -z "$KEEP_V6" ]; then
+        FW_FLUSH_CMD="$FW_FLUSH_CMD; $ip6t -P INPUT ACCEPT; $ip6t -P OUTPUT ACCEPT; $ip6t -P FORWARD ACCEPT; $ip6t -F; $ip6t -X"
+    fi
 fi
 
-# Remove any existing safety flush cron before adding a fresh one
-( crontab -l 2>/dev/null | grep -v "COORD_FW_SAFETY_FLUSH" ; echo "*/5 * * * * $FW_FLUSH_CMD" ) | crontab -
-echo "[!] SAFETY CRON INSTALLED: Firewall will be flushed every 5 minutes."
-echo "[!] Run misc/remove_fw_cron.sh once connectivity is confirmed."
+# `*/5` can fire seconds after we apply the rules. Phase the 5-minute cycle off
+# the current minute so the first flush lands ~4-5 minutes from now.
+NOW_MIN=$(date +%M); NOW_MIN=${NOW_MIN#0}
+PHASE=$(( NOW_MIN % 5 ))
+CRON_MINS="$PHASE"
+m=$(( PHASE + 5 ))
+while [ "$m" -lt 60 ]; do CRON_MINS="$CRON_MINS,$m"; m=$(( m + 5 )); done
 
-if [ ! -z "$ipt" ]; then
-    iptables-save > /opt/rules.v4
-    iptables-save > $BCK/rules.v4.old
+if command -v crontab >/dev/null 2>&1; then
+    # Remove any existing safety flush cron before adding a fresh one
+    ( crontab -l 2>/dev/null | grep -v "COORD_FW_SAFETY_FLUSH" ; echo "$CRON_MINS * * * * $FW_FLUSH_CMD $FW_FLUSH_COMMENT" ) | crontab -
+    echo "[!] SAFETY CRON INSTALLED: Firewall will be flushed every 5 minutes (first in ~4-5 min)."
+    echo "[!] Run misc/remove_fw_cron.sh once connectivity is confirmed."
+else
+    # No cron available: one-shot detached flush in 5 minutes.
+    nohup sh -c "sleep 300; $FW_FLUSH_CMD" >/dev/null 2>&1 </dev/null &
+    echo "[!] crontab not found: ONE-SHOT flush scheduled in 5 minutes (PID $!)."
+    echo "[!] kill $! once connectivity is confirmed."
+fi
+
+if [ "$IS_BSD" = false ]; then
+    if [ -n "$ipts" ]; then
+        $ipts > /opt/rules.v4.old 2>/dev/null
+        $ipts > "$BCK/rules.v4.old"
+    fi
 
     ALLOW
 
-    #$ipt -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-    #$ipt -A OUTPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    # Replies to traffic we allowed. Non-fatal: very old kernels may lack conntrack.
+    $ipt -A INPUT  -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+        $ipt -A INPUT  -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
+    $ipt -A OUTPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+        $ipt -A OUTPUT -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
 
     if [ -n "$CCSHOST" ]; then
-        $ipt -A OUTPUT -d $CCSHOST -j ACCEPT
+        $ipt -A OUTPUT -d "$CCSHOST" -j ACCEPT
         CHECKERR
-        $ipt -A INPUT -s $CCSHOST -j ACCEPT
+        $ipt -A INPUT -s "$CCSHOST" -j ACCEPT
         CHECKERR
     fi
 
     # Allow local network
-    $ipt -A INPUT -s $LOCALNETWORK -j ACCEPT
+    $ipt -A INPUT -s "$LOCALNETWORK" -j ACCEPT
     CHECKERR
-    $ipt -A OUTPUT -d $LOCALNETWORK -j ACCEPT
+    $ipt -A OUTPUT -d "$LOCALNETWORK" -j ACCEPT
     CHECKERR
 
     # Allow loopback
@@ -103,30 +152,24 @@ if [ ! -z "$ipt" ]; then
     CHECKERR
 
     # Allow in SSH from dispatcher
-    $ipt -A INPUT -s $DISPATCHER -p tcp --dport 22 -j ACCEPT
+    $ipt -A INPUT -s "$DISPATCHER" -p tcp --dport 22 -j ACCEPT
     CHECKERR
-    $ipt -A OUTPUT -d $DISPATCHER -p tcp --sport 22 -j ACCEPT
+    $ipt -A OUTPUT -d "$DISPATCHER" -p tcp --sport 22 -j ACCEPT
     CHECKERR
 
-#    # Get machine IP — hostname -I doesn't work on Alpine/BusyBox, so fall back
-#    MYIP=$(hostname -I 2>/dev/null | awk '{print $1}')
-#    if [ -z "$MYIP" ]; then
-#        MYIP=$(ip -4 -o addr show 2>/dev/null | awk '!/127\.0\.0\.1/ {gsub(/\/.*/, "", $4); print $4; exit}')
-#    fi
-#    if [ -z "$MYIP" ]; then
-#        MYIP=$(ifconfig 2>/dev/null | awk '/inet / && !/127\.0\.0\.1/ {gsub(/addr:/, "", $2); print $2; exit}')
-#    fi
-#    case "$MYIP" in
-#        10.10.20.101)
-#            $ipt -A INPUT -s 8.8.8.8 -p tcp --dport 22 -j ACCEPT
-#            ;;
-#        10.10.20.103)
-#            $ipt -A INPUT -s 10.10.10.10 -p tcp --dport 22 -j ACCEPT
-#            ;;
-#        *)
-#            echo "[*] No per-host rules for $MYIP"
-#            ;;
-#    esac
+    # Scored services open to anyone
+    for p in $(echo "$ALLOW_TCP" | tr ',' ' '); do
+        $ipt -A INPUT -p tcp --dport "$p" -j ACCEPT
+        CHECKERR
+        $ipt -A OUTPUT -p tcp --sport "$p" -j ACCEPT
+        CHECKERR
+    done
+    for p in $(echo "$ALLOW_UDP" | tr ',' ' '); do
+        $ipt -A INPUT -p udp --dport "$p" -j ACCEPT
+        CHECKERR
+        $ipt -A OUTPUT -p udp --sport "$p" -j ACCEPT
+        CHECKERR
+    done
 
     # Block everything else
     $ipt -P INPUT DROP
@@ -136,67 +179,65 @@ if [ ! -z "$ipt" ]; then
     $ipt -P FORWARD DROP
     CHECKERR
 
+    # IPv6: nothing above applies to v6, so without this it stays wide open.
+    if [ -n "$ip6t" ] && [ -z "$KEEP_V6" ]; then
+        $ip6t -F; $ip6t -X
+        $ip6t -A INPUT -i lo -j ACCEPT
+        $ip6t -A OUTPUT -o lo -j ACCEPT
+        $ip6t -P INPUT DROP
+        $ip6t -P OUTPUT DROP
+        $ip6t -P FORWARD DROP
+        echo "[+] IPv6 locked down (lo only). Set KEEP_V6=1 to skip."
+    fi
+
     # Save rules
-    iptables-save > /opt/rules.v4
-    iptables-save > $BCK/rules.v4
-    iptables-save
-elif [ "$IS_BSD" = true ]; then
+    if [ -n "$ipts" ]; then
+        $ipts > /opt/rules.v4
+        $ipts > "$BCK/rules.v4"
+        $ipts
+    else
+        $ipt -S
+    fi
+else
     ALLOW
 
-    mv /etc/pf.conf "$BCK/pf.conf.old"
+    [ -f /etc/pf.conf ] && cp /etc/pf.conf "$BCK/pf.conf.old"
 
-    echo "set skip on lo" > /etc/pf.conf
+    {
+        echo "set skip on lo"
+        for i in $(echo "$DISPATCHER" | tr ',' ' '); do
+            echo "pass in quick proto tcp from $i to any port 22"
+        done
+        for i in $(echo "$LOCALNETWORK" | tr ',' ' '); do
+            echo "pass in quick from $i to any"
+            echo "pass out quick from any to $i"
+        done
+        for i in $(echo "$CCSHOST" | tr ',' ' '); do
+            echo "pass out quick from any to $i"
+            echo "pass in quick from $i to any"
+        done
+        for p in $(echo "$ALLOW_TCP" | tr ',' ' '); do
+            echo "pass in quick proto tcp from any to any port $p"
+        done
+        for p in $(echo "$ALLOW_UDP" | tr ',' ' '); do
+            echo "pass in quick proto udp from any to any port $p"
+        done
+        echo "block all"
+    } > /etc/pf.conf.coord
 
-    for i in $(echo "$DISPATCHER" | tr ',' ' '); do
-        echo "pass in quick proto tcp from $i to any port 22" >> /etc/pf.conf
-    done
-
-    for i in $(echo "$LOCALNETWORK" | tr ',' ' '); do
-        echo "pass in quick from $i to any" >> /etc/pf.conf
-        echo "pass out quick from any to $i" >> /etc/pf.conf
-    done
-
-    for i in $(echo "$CCSHOST" | tr ',' ' '); do
-        echo "pass out quick from any to $i" >> /etc/pf.conf
-        echo "pass in quick from $i to any" >> /etc/pf.conf
-    done
-
-#    # (BSD)
-#    MYIP=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | head -1 | awk '{print $2}')
-#    case "$MYIP" in
-#        10.250.72.10)
-#            # Web server — allow HTTP/HTTPS
-#            echo "pass in quick proto tcp from any to any port 80" >> /etc/pf.conf
-#            echo "pass out quick proto tcp from any port 80 to any" >> /etc/pf.conf
-#            echo "pass in quick proto tcp from any to any port 443" >> /etc/pf.conf
-#            echo "pass out quick proto tcp from any port 443 to any" >> /etc/pf.conf
-#            ;;
-#        10.250.72.11)
-#            # DNS server — allow DNS
-#            echo "pass in quick proto {tcp, udp} from any to any port 53" >> /etc/pf.conf
-#            echo "pass out quick proto {tcp, udp} from any port 53 to any" >> /etc/pf.conf
-#            ;;
-#        10.250.72.12)
-#            # Mail server — allow SMTP/IMAP
-#            echo "pass in quick proto tcp from any to any port {25, 143, 993}" >> /etc/pf.conf
-#            echo "pass out quick proto tcp from any port {25, 143, 993} to any" >> /etc/pf.conf
-#            ;;
-#        10.250.72.13)
-#            # Database server — allow MySQL from local net only
-#            echo "pass in quick proto tcp from $LOCALNETWORK to any port 3306" >> /etc/pf.conf
-#            echo "pass out quick proto tcp from any port 3306 to $LOCALNETWORK" >> /etc/pf.conf
-#            ;;
-#        *)
-#            echo "[*] No per-host PF rules for $MYIP"
-#            ;;
-#    esac
-
-    echo "block all" >> /etc/pf.conf
-
+    # Validate before installing so a typo can't leave us half-applied
+    if ! pfctl -nf /etc/pf.conf.coord; then
+        echo "ERROR: generated pf.conf failed validation; leaving firewall OPEN."
+        rm -f /etc/pf.conf.coord
+        exit 1
+    fi
+    mv /etc/pf.conf.coord /etc/pf.conf
     cat /etc/pf.conf
 
-    kldload pf
+    # FreeBSD needs the module; OpenBSD has pf built in (no kldload)
+    command -v kldload >/dev/null 2>&1 && kldload -n pf 2>/dev/null
     pfctl -f /etc/pf.conf
-    cat /etc/pf.conf
+    CHECKERR
     pfctl -e
+    CHECKERR
 fi

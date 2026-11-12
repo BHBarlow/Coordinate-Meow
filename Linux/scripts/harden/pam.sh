@@ -1,240 +1,250 @@
 #!/bin/sh
 # @d_tranman/Nigel Gerald/Nigerald
 # KaliPatriot | TTU CCDC | Landon Byrge
-# This pam script sucked @dsu
-# I'm going to fix it
-# I'm going to make it better
-# I'm going to make it great
-# I'm going to make it the best
-# I'm going to make it the best pam script ever
-# I'm going to make it the best pam script ever written
-# I'm going to make it the best pam script ever written in the history of the world
-# I'm going to make it the best pam script ever written in the history of the world of all time
-# I'm going to make it the best pam script ever written in the history of the world of all time in the universe
-# I'm going to make it the best pam script ever written in the history of the world of all time in the universe of all universes
-# I'm going to make it the best pam script ever written in the history of the world of all time in the universe of all universes of all multiverses
-# I'm going to make it the best pam script ever written in the history of the world of all time in the universe of all universes of all multiverses of all omniverses
-# I'm going to make it the best pam script ever written in the history of the world of all time in the universe of all universes of all multiverses of all omniverses of all megaverses
-# I'm going to make it the best pam script ever written in the history of the world of all time in the universe of all universes of all multiverses of all omniverses of all megaverses of all gigaverses
-# I'm going to make it the best pam script ever written in the history of the world of all time in the universe of all universes of all multiverses of all omniverses of all megaverses of all gigaverses of all teraverses
-# I'm going to make it the best pam script ever written in the history of the world of all time in the universe of all universes of all multiverses of all omniverses of all megaverses of all gigaverses of all teraverses of all petaverses
-# I'm going to make it the best pam script ever written in the history of the world of all time in the universe of all universes of all multiverses of all omniverses of all megaverses of all gigaverses of all teraverses of all petaverses of all exaverses
-# I'm going to make it the best pam script ever written in the history of the world of all time in the universe of all universes of all multiverses of all omniverses of all megaverses of all gigaverses of all teraverses of all petaverses of all exaverses of all zettaverses
-# I'm going to make it the best pam script ever written in the history of the world of all time in the universe of all universes of all multiverses of all omniverses of all megaverses of all gigaverses of all teraverses of all petaverses of all exaverses of all zettaverses of all yottaverses
-# I'm going to make it the best pam script ever written in the history of the world of all time in the universe of all universes of all multiverses of all omniverses of all megaverses of all gigaverses of all teraverses of all petaverses of all exaverses of all zettaverses of all yottaverses of all xennaverses
-# I'm going to make it the best pam script ever written in the history of the world of all time in the universe of all universes of all multiverses of all omniverses of all megaverses of all gigaverses of all teraverses of all petaverses of all exaverses of all zettaverses of all yottaverses of all xennaverses of all wekaverses
-# I'm going to make it the best pam script ever written in the history of the world of all time in the universe of all universes of all multiverses of all omniverses of all megaverses of all gigaverses of all teraverses of all petaverses of all exaverses of all zettaverses of all yottaverses of all xennaverses of all wekaverses of all vundaverses
-# I'm going to make it the best pam script ever written in the history of the world of all time in the universe of all universes of all multiverses of all omniverses of all megaverses of all gigaverses of all teraverses of all petaverses of all exaverses of all zettaverses of all yottaverses of all xennaverses of all wekaverses of all vundaverses of all uqaverses
-# I'm going to make it the best pam script ever written in the history of the world of all time in the universe of all universes of all multiverses of all omniverses of all megaverses of all gigaverses of all teraverses of all petaverses of all exaverses of all zettaverses of all yottaverses of all xennaverses of all wekaverses of all vundaverses of all uqaverses of all trelaverses
-# okay stop copilot
+#
+# Back up PAM config + modules, verify them against the package database, and
+# optionally reinstall PAM. Options are env vars (coordinate -E):
+#   (none)        back up /etc/pam.d and PAM modules to $BCK, then verify
+#   REINSTALL=1   back up, then reinstall PAM packages and regenerate config
+#   REVERT=1      restore /etc/pam.d and modules from the backup
+#   DISFW=1       temporarily open outbound firewall for the package manager
+#                 (restored to its previous state on exit)
+#   UNTESTED=1    allow running on Alpine / Slackware / Arch
+#   BCK           backup root (default /root/.cache)
+#
+# Reinstalls download packages: raise coordinate's timeout, e.g. -T 300.
+# NOTE: package reinstalls do NOT overwrite modified files in /etc/pam.d (dpkg
+# and rpm keep admin-changed config files). Check the verify output for those.
 
-if [ -z "$BCK" ]; then
-    BCK="/root/.cache"
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[-] Must run as root."
+    exit 1
 fi
 
-# $REINSTALL=true - reinstall pam
-
+BCK="${BCK:-/root/.cache}"
 BACKUPCONFDIR="$BCK/pam.d"
 BACKUPBINARYDIR="$BCK/pam_libraries"
 
-mkdir -p $BACKUPCONFDIR
-mkdir -p $BACKUPBINARYDIR
-
 ipt=$(command -v iptables || command -v /sbin/iptables || command -v /usr/sbin/iptables)
-IS_BSD=false
 
-if command -v pkg >/dev/null || command -v pkg_info >/dev/null; then
-    IS_BSD=true
-fi
+case "$(uname -s)" in
+    *BSD|DragonFly) IS_BSD=true ;;
+    *) IS_BSD=false ;;
+esac
 
+# ── Firewall open/close around package installs ────────────────────────────
+FW_OPENED=""
 ALLOW() {
-    if [ -z $DISFW ]; then
-        return
-    fi
+    [ -z "$DISFW" ] && return
     if [ "$IS_BSD" = true ]; then
-        pfctl -d
-    else
-        $ipt -P OUTPUT ACCEPT
+        if pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'; then
+            pfctl -d && FW_OPENED=pf
+        fi
+    elif [ -n "$ipt" ]; then
+        if $ipt -S OUTPUT 2>/dev/null | grep -q '^-P OUTPUT DROP'; then
+            $ipt -P OUTPUT ACCEPT && FW_OPENED=ipt
+        fi
     fi
+    [ -n "$FW_OPENED" ] && echo "[!] Outbound firewall temporarily opened."
 }
 
 DENY() {
-    if [ -z $DISFW ]; then
+    case "$FW_OPENED" in
+        pf)  pfctl -e ;;
+        ipt) $ipt -P OUTPUT DROP ;;
+        *)   return ;;
+    esac
+    FW_OPENED=""
+    echo "[+] Outbound firewall restored."
+}
+
+# Always put the firewall back, even if we exit early
+trap 'DENY' EXIT
+trap 'exit 1' HUP INT TERM
+
+# ── Backup / revert ─────────────────────────────────────────────────────────
+backup_pam() {
+    echo "[+] Backing up PAM configuration files and binaries..."
+
+    if [ -d /etc/pam.d ]; then
+        mkdir -p "$BACKUPCONFDIR"
+        cp -Rp /etc/pam.d/. "$BACKUPCONFDIR/"
+    fi
+    # FreeBSD/OpenBSD may also use /etc/pam.conf
+    [ -f /etc/pam.conf ] && cp -p /etc/pam.conf "$BCK/pam.conf"
+
+    mkdir -p "$BACKUPBINARYDIR"
+    MOD=$(find /lib/ /lib64/ /lib32/ /usr/lib/ /usr/lib64/ /usr/lib32/ /usr/local/lib/ \
+        -name "pam_unix.so*" 2>/dev/null)
+
+    if [ -z "$MOD" ]; then
+        echo "[-] pam_unix.so not found"
+    else
+        echo "[+] Found the following pam_unix.so files:"
+        echo "$MOD"
+        for i in $MOD; do
+            BINARY_DIR=$(dirname "$i")
+            DEST="$BACKUPBINARYDIR$BINARY_DIR"
+            echo "Backing up all binaries from $BINARY_DIR to $DEST"
+            mkdir -p "$DEST"
+            cp -p "$BINARY_DIR"/pam* "$DEST/" 2>/dev/null
+        done
+    fi
+
+    echo "[+] Backup complete: $BCK"
+}
+
+revert_pam() {
+    echo "[+] Reverting PAM binaries from backup..."
+    if [ ! -d "$BACKUPBINARYDIR" ]; then
+        echo "[-] Backup directory $BACKUPBINARYDIR does not exist. Cannot revert."
+        exit 1
+    fi
+    find "$BACKUPBINARYDIR" -type f | while read -r file; do
+        ORIGINAL_DIR=$(dirname "${file#"$BACKUPBINARYDIR"}")
+        echo "Restoring $file to $ORIGINAL_DIR"
+        mkdir -p "$ORIGINAL_DIR"
+        cp -p "$file" "$ORIGINAL_DIR/"
+    done
+
+    echo "[+] Reverting PAM configuration files..."
+    if [ ! -d "$BACKUPCONFDIR" ]; then
+        echo "[-] Backup directory $BACKUPCONFDIR does not exist. Cannot revert."
+        exit 1
+    fi
+    cp -Rp "$BACKUPCONFDIR"/. /etc/pam.d/
+    [ -f "$BCK/pam.conf" ] && cp -p "$BCK/pam.conf" /etc/pam.conf
+
+    echo "[+] Reversion complete."
+}
+
+# ── Package-database verification (read-only) ───────────────────────────────
+verify_pam() {
+    echo "[+] Verifying PAM files against the package database..."
+    echo "    (5 = checksum changed, c = config file; any output here is worth a look)"
+    if command -v dpkg >/dev/null 2>&1; then
+        PKGS=$(dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 'libpam*' 2>/dev/null \
+            | awk '$1 ~ /^ii/ {print $2}' | tr '\n' ' ')
+        # Never call dpkg -V with no args: that verifies EVERY package
+        [ -z "$PKGS" ] && { echo "    [*] No libpam packages found."; return; }
+        # shellcheck disable=SC2086
+        OUT=$(dpkg -V $PKGS 2>&1)
+    elif command -v rpm >/dev/null 2>&1; then
+        OUT=$(rpm -V pam 2>&1)
+    else
+        echo "    [*] No dpkg/rpm here; skipping verification."
         return
     fi
-    if [ "$IS_BSD" = true ]; then
-        pfctl -e
+    if [ -n "$OUT" ]; then
+        echo "$OUT"
     else
-        $ipt -P OUTPUT DROP
+        echo "    [+] No modified PAM package files."
     fi
 }
 
-handle_pam() {
-    if [ ! -z "$REVERT" ]; then
-        echo "[+] Reverting PAM binaries from backup..."
-        if [ -d "$BACKUPBINARYDIR" ]; then
-            find "$BACKUPBINARYDIR" -type f | while read -r file; do
-                ORIGINAL_DIR=$(echo "$file" | sed "s|$BACKUPBINARYDIR||g" | xargs dirname)
-                echo "Restoring $file to $ORIGINAL_DIR"
-                mkdir -p "$ORIGINAL_DIR"
-                cp "$file" "$ORIGINAL_DIR"
-            done
-        else
-            echo "[-] Backup directory $BACKUPBINARYDIR does not exist. Cannot revert."
-            exit 1
-        fi
-
-        echo "[+] Reverting PAM configuration files..."
-        if [ -d "$BACKUPCONFDIR" ]; then
-            cp -R "$BACKUPCONFDIR"/* /etc/pam.d/
-        else
-            echo "[-] Backup directory $BACKUPCONFDIR does not exist. Cannot revert."
-            exit 1
-        fi
-
-        echo "[+] Reversion complete."
-    else
-        echo "[+] Backing up PAM configuration files and binaries..."
-
-        # Backup configuration directory
-        mkdir -p "$BACKUPCONFDIR"
-        cp -R /etc/pam.d/* "$BACKUPCONFDIR/"
-
-        # Backup PAM-related binaries
-        mkdir -p "$BACKUPBINARYDIR"
-        MOD=$(find /lib/ /lib64/ /lib32/ /usr/lib/ /usr/lib64/ /usr/lib32/ -name "pam_unix.so" 2>/dev/null)
-
-        if [ -z "$MOD" ]; then
-            echo "[-] pam_unix.so not found"
-        else
-            echo "[+] Found the following pam_unix.so files:"
-            echo "$MOD"
-            for i in $MOD; do
-                BINARY_DIR=$(dirname "$i")
-                DEST="$BACKUPBINARYDIR$BINARY_DIR"
-                echo "Backing up all binaries from $BINARY_DIR to $DEST"
-                mkdir -p "$DEST"
-                cp "$BINARY_DIR"/pam* "$DEST/"
-            done
-        fi
-
-        echo "[+] Backup complete."
-    fi
-}
-
+# ── Per-distro reinstall ────────────────────────────────────────────────────
 DEBIAN() {
-    if [ ! -z "$REINSTALL" ]; then
-        echo "[+] Reinstalling PAM-related packages..."
-        DEBIAN_FRONTEND=noninteractive
-        pam-auth-update --package --force
-        apt-get -y --reinstall install libpam-runtime libpam-modules
-        echo "[+] Reinstallation complete."
-    fi
-
-    handle_pam
+    echo "[+] Reinstalling PAM-related packages..."
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -y -o Dpkg::Options::=--force-confold --reinstall install \
+        libpam-runtime libpam-modules libpam-modules-bin </dev/null
+    # Regenerate common-* from the package profiles (drops injected lines)
+    pam-auth-update --package --force </dev/null
+    echo "[+] Reinstallation complete."
 }
 
 RHEL() {
-    if [ ! -z "$REINSTALL" ]; then
-        echo "[+] Reinstalling PAM-related packages..."
+    echo "[+] Reinstalling PAM-related packages..."
+    if command -v dnf >/dev/null 2>&1; then
+        dnf -y reinstall pam
+    else
         yum -y reinstall pam
-        echo "[+] Reinstallation complete."
-		if command -v authconfig >/dev/null; then
-			authconfig --updateall
-		fi
     fi
-
-    handle_pam
+    if command -v authselect >/dev/null 2>&1; then
+        # RHEL 8+: regenerate system-auth/password-auth if authselect manages them
+        if authselect check >/dev/null 2>&1; then
+            authselect apply-changes
+        else
+            echo "[!] authselect is not managing PAM here (or files were edited). Review /etc/pam.d by hand."
+        fi
+    elif command -v authconfig >/dev/null 2>&1; then
+        authconfig --updateall
+    fi
+    echo "[+] Reinstallation complete."
 }
+
 SUSE() {
-    if [ ! -z "$REINSTALL" ]; then
-        echo "[+] Reinstalling PAM-related packages..."
-        zypper install -f -y pam
-        pam-config --update
-        echo "[+] Reinstallation complete."
-    fi
-
-    handle_pam
-}
-
-UBUNTU(){
-  DEBIAN
+    echo "[+] Reinstalling PAM-related packages..."
+    zypper --non-interactive install -f pam
+    pam-config --update
+    echo "[+] Reinstallation complete."
 }
 
 ALPINE() {
-    if [ -z "$UNTESTED" ]; then
-        echo "[-] Alpine Linux is untested. Please test manually first."
-        exit 1
-    fi
-    if [ ! -z "$REINSTALL" ]; then
-        echo "[+] Reinstalling PAM-related packages for Alpine..."
-        apk fix --reinstall --purge linux-pam
-        for file in $( find /etc/pam.d -name *.apk-new | xargs -0 echo ); do
-            mv $file $( echo $file | sed 's/.apk-new//g' )
-        done
-        echo "[+] Reinstallation complete."
-    fi
-
-    handle_pam
+    echo "[+] Reinstalling PAM-related packages for Alpine..."
+    apk fix --reinstall linux-pam
+    find /etc/pam.d -name '*.apk-new' 2>/dev/null | while read -r file; do
+        mv "$file" "${file%.apk-new}"
+    done
+    echo "[+] Reinstallation complete."
 }
 
 SLACK() {
-    if [ -z "$UNTESTED" ]; then
-        echo "[-] Alpine Linux is untested. Please test manually first."
-        exit 1
-    fi
-    if [ ! -z "$REINSTALL" ]; then
-        echo "[+] Slackware does not support automatic reinstallation of packages. Please reinstall PAM manually."
-    fi
-
-    handle_pam
+    echo "[!] Slackware does not support automatic reinstallation of packages. Please reinstall PAM manually."
 }
 
 ARCH() {
-    if [ -z "$UNTESTED" ]; then
-        echo "[-] Alpine Linux is untested. Please test manually first."
-        exit 1
-    fi
-    if [ ! -z "$REINSTALL" ]; then
-        echo "[+] Reinstalling PAM-related packages for Arch..."
-        pacman -S --noconfirm pam
-        echo "[+] Reinstallation complete."
-    fi
-
-    handle_pam
+    echo "[+] Reinstalling PAM-related packages for Arch..."
+    pacman -S --noconfirm pam
+    echo "[+] Reinstallation complete."
 }
 
 BSD() {
-    if [ ! -z "$REINSTALL" ]; then
-        echo "[+] Reinstalling PAM-related packages for BSD..."
-        pkg install -f pam || pkg_add -f pam
-        echo "[+] Reinstallation complete."
-    fi
-
-    handle_pam
+    # PAM is part of the FreeBSD/OpenBSD base system, not a package.
+    echo "[!] PAM is in the BSD base system; it can't be reinstalled with pkg."
+    echo "    FreeBSD: compare with 'freebsd-update IDS' or restore from install media."
 }
 
+need_untested() {
+    if [ -z "$UNTESTED" ]; then
+        echo "[-] $1 is untested. Set UNTESTED=1 after testing manually."
+        exit 1
+    fi
+}
 
-ALLOW
+reinstall_pam() {
+    ALLOW
+    if [ "$IS_BSD" = true ]; then
+        BSD
+    elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+        RHEL
+    elif command -v zypper >/dev/null 2>&1; then
+        SUSE
+    elif command -v apt-get >/dev/null 2>&1; then
+        DEBIAN   # Ubuntu included
+    elif command -v apk >/dev/null 2>&1; then
+        need_untested "Alpine Linux"; ALPINE
+    elif command -v slapt-get >/dev/null 2>&1 || grep -qi slackware /etc/os-release 2>/dev/null; then
+        need_untested "Slackware"; SLACK
+    elif command -v pacman >/dev/null 2>&1; then
+        need_untested "Arch Linux"; ARCH
+    else
+        echo "[-] Unknown package manager; cannot reinstall PAM."
+    fi
+    DENY
+}
 
-if command -v yum >/dev/null ; then
-  RHEL
-elif command -v zypper >/dev/null ; then
-  SUSE
-elif command -v apt-get >/dev/null ; then
-  if $( cat /etc/os-release | grep -qi Ubuntu ); then
-      UBUNTU
-  else
-      DEBIAN
-  fi
-elif command -v apk >/dev/null ; then
-  ALPINE
-elif command -v slapt-get >/dev/null || ( cat /etc/os-release | grep -i slackware ) ; then
-  SLACK
-elif command -v pacman >/dev/null ; then
-  ARCH
-elif command -v pkg >/dev/null || command -v pkg_add >/dev/null; then
-    BSD
+# ── Main ────────────────────────────────────────────────────────────────────
+if [ -n "$REVERT" ]; then
+    revert_pam
+    exit 0
 fi
 
-DENY
+# Back up BEFORE touching anything so a bad reinstall can be reverted.
+backup_pam
+
+if [ -n "$REINSTALL" ]; then
+    reinstall_pam
+fi
+
+verify_pam
