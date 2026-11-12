@@ -3,7 +3,9 @@
 #
 # basic-persistence-checker.sh - one-pass Linux persistence & rootkit threat hunt
 #
-# Combines bashrc.sh + cron.sh + ld-lkm.sh and adds:
+# Combines bashrc.sh + cron.sh + ld-lkm.sh + ssh/pam checks and adds:
+#   - SSH authorized_keys across every home + odd locations (display only)
+#   - PAM backdoors (pam_exec, pam_succeed_if, nullok, deny/permit order, unowned modules)
 #   - alias / function / "declare -f" hijacks in shell startup files
 #   - immutable & append-only files (chattr +i / +a)
 #   - SUID / SGID binaries (+ package checksum verify) and file capabilities
@@ -12,12 +14,34 @@
 #
 # READ-ONLY: nothing on the box is changed. Fix commands are printed, not run.
 #
+# ============================================================================
+# SECTIONS  (choose with -s a,b,c  or  PC_SECTIONS=a,b,c ; default = all)
+# ----------------------------------------------------------------------------
+#   procs      processes running from deleted / memfd (fileless) / temp-dir binaries
+#   shell      shell rc & profile backdoors: alias/function hijacks, declare -f,
+#              PROMPT_COMMAND/BASH_ENV hooks, history evasion, world-writable rc
+#   cron       cron (user/system/periodic), at jobs, systemd units & timers,
+#              rc.local, init.d, udev RUN+=, update-motd, XDG autostart
+#   ssh        authorized_keys in every home + odd disk locations, and the
+#              effective sshd config (DISPLAY ONLY - never removes a key)
+#   pam        PAM backdoors: pam_exec, pam_succeed_if, nullok, permit-before-deny
+#              ordering, PAM modules unowned by a package or with a changed checksum
+#   preload    LD_PRELOAD / LD_AUDIT / ld.so.preload rootkits, suspicious library
+#              maps, hidden files/PIDs (libc view vs static busybox)
+#   kernel     LKM rootkits, kernel taint, hidden/unpackaged modules, modprobe
+#              hooks, ftrace/kprobe/eBPF hooks, brute-force hidden-PID probe
+#   immutable  immutable / append-only files (chattr +i / +a)
+#   suid       SUID/SGID binaries (location, GTFOBins, package checksum) + capabilities
+#
+#   Each line is tagged [ALERT] (act now) / [WARN] (verify) / [INFO] / [OK].
+#   The run ends with a per-section ALERT/WARN table and one PERSIST-SUMMARY line.
+# ============================================================================
+#
 # Usage: sudo ./basic-persistence-checker.sh [-q] [-v] [-n] [-s sections]
 #   -q        quiet - hide [INFO]/[OK] lines, show only [WARN] and [ALERT]
 #   -v        verbose - show [INFO]/[OK] lines too (default when run in a terminal)
 #   -n        no colour (automatic when output is not a terminal)
-#   -s list   comma-separated sections to run (default: all):
-#             shell,cron,preload,kernel,immutable,suid,procs
+#   -s list   comma-separated sections from the table above (default: all)
 #   -h        help
 #
 # Same settings as environment variables (for coordinate, which can't pass args):
@@ -30,7 +54,7 @@
 #             add -E PC_SECTIONS=procs,shell,cron for a fast pass, -E PC_QUIET=0 for everything
 #             grep PERSIST-SUMMARY output/*/* for a one-line-per-host overview
 
-ALL_SECTIONS="shell cron preload kernel immutable suid procs"
+ALL_SECTIONS="shell cron ssh pam preload kernel immutable suid procs"
 SECTIONS=${PC_SECTIONS:-$ALL_SECTIONS}
 SECTIONS=${SECTIONS//,/ }
 if [[ -t 1 ]]; then QUIET=${PC_QUIET:-0}; COLOR=${PC_COLOR:-1}
@@ -1140,11 +1164,152 @@ run_procs() {
 }
 
 # ============================================================================
+# SECTION: ssh - authorized_keys & sshd config (DISPLAY ONLY - nothing wiped)
+# ============================================================================
+# always-visible key line (shows even in quiet/coordinate mode, respects budget)
+keyline() { room && printf '  %skey%s %s\n' "$GREEN" "$NC" "$*"; return 0; }
+
+show_akeys() {   # show_akeys <file> <user>
+    local f=$1 who=$2 owner perm line n=0
+    [[ -f $f ]] || return 0
+    read -r owner perm _ <<< "$(stat -L -c '%U %a' "$f" 2>/dev/null)"
+    if [[ $perm =~ ^[0-9]+$ ]] && (( ${perm: -1} & 2 )); then
+        alert "$f is WORLD-WRITABLE ($perm) - anyone can append a key. Fix: chmod 600 '$f'"
+    fi
+    if [[ -n $owner && $owner != "$who" && $owner != root ]]; then
+        warn "$f is owned by '$owner' but sits in ${who}'s home ($(fmeta "$f"))"
+    fi
+    while IFS= read -r line || [[ -n $line ]]; do
+        line=${line#"${line%%[![:space:]]*}"}
+        [[ -z $line || $line == \#* ]] && continue
+        ((n++, SSH_KEYS++))
+        keyline "[$who] $(trunc "$line" 160)"
+        # options field present? (anything before the key type is an options list)
+        if [[ $line =~ (command|environment|permitopen)=  ]]; then
+            warn "  ^ key has a forced-command/environment/permitopen option - read it: $f line $n"
+        fi
+    done < "$f"
+    ((n)) && info "$who: $n authorized key(s) in $f"
+}
+
+run_ssh() {
+    section ssh "SSH authorized_keys & sshd config (display only - use harden/ssh_key_checker.sh to remove)"
+    SSH_KEYS=0
+    get_homes
+    local h f
+
+    sub "authorized_keys in every home listed in /etc/passwd"
+    for h in "${HOMES[@]}"; do
+        for f in "$h/.ssh/authorized_keys" "$h/.ssh/authorized_keys2"; do
+            show_akeys "$f" "${HOME_USER[$h]}"
+        done
+    done
+
+    sub "authorized_keys anywhere else on disk (attacker drop points)"
+    local other=0
+    while IFS= read -r -d '' f; do
+        case $f in
+            */.ssh/authorized_keys|*/.ssh/authorized_keys2)
+                [[ -n ${HOME_USER[${f%/.ssh/*}]} ]] && continue ;;  # already shown above
+        esac
+        other=1
+        alert "authorized_keys in a non-home location: $f ($(fmeta "$f"))"
+        show_akeys "$f" unknown
+    done < <(find / -xdev \( -path /proc -o -path /sys -o -path /snap \) -prune -o \
+             -type f -name 'authorized_keys*' -print0 2>/dev/null)
+    ((other)) || ok "No authorized_keys outside the standard home .ssh dirs"
+    ((SSH_KEYS)) || ok "No authorized keys found anywhere"
+
+    sub "sshd effective configuration (sshd -T)"
+    local sshd=""
+    sshd=$(command -v sshd 2>/dev/null) ||
+        for d in /usr/sbin /sbin /usr/local/sbin; do [[ -x $d/sshd ]] && { sshd=$d/sshd; break; }; done
+    if [[ -n $sshd ]]; then
+        local line k v
+        while IFS= read -r line; do
+            k=${line%% *}; v=${line#* }
+            case $k in
+                permitrootlogin)      [[ $v == yes ]] && warn "PermitRootLogin yes" || info "$line" ;;
+                permitemptypasswords) [[ $v == yes ]] && alert "PermitEmptyPasswords yes - accounts with no password can log in" || info "$line" ;;
+                authorizedkeyscommand) [[ -n $v && $v != none ]] && warn "AuthorizedKeysCommand=$v - keys can come from this program's output, verify it" || info "$line" ;;
+                authorizedkeysfile)   case $v in *%h/.ssh/*|*.ssh/authorized_keys*) info "$line" ;; *) warn "AuthorizedKeysFile is non-standard: $v" ;; esac ;;
+                forcecommand)         [[ $v != none ]] && warn "ForceCommand=$v" || info "$line" ;;
+                passwordauthentication|pubkeyauthentication|usepam|permittunnel|x11forwarding|gatewayports|allowusers|allowgroups|denyusers|denygroups)
+                    info "$line" ;;
+            esac
+        done < <("$sshd" -T 2>/dev/null | tr 'A-Z' 'a-z')
+    else
+        warn "sshd binary not found - cannot show effective config; check /etc/ssh/sshd_config by hand"
+    fi
+}
+
+# ============================================================================
+# SECTION: pam - PAM authentication backdoors
+# ============================================================================
+run_pam() {
+    section pam "PAM configuration & module backdoors"
+    if [[ ! -d /etc/pam.d ]]; then info "/etc/pam.d not present - skipped"; return; fi
+    local f line hit
+
+    sub "Arbitrary command execution (pam_exec.so)"
+    hit=0
+    while IFS= read -r line; do hit=1; alert "pam_exec.so runs an external program on auth: $line"; done \
+        < <(grep -rEn '^[^#]*pam_exec\.so' /etc/pam.d/ 2>/dev/null)
+    ((hit)) || ok "No pam_exec.so lines"
+
+    sub "Conditional auth bypass (pam_succeed_if.so)"
+    hit=0
+    while IFS= read -r line; do hit=1; warn "pam_succeed_if.so (legit for targeting rules, abused to skip auth - read it): $line"; done \
+        < <(grep -rEn '^[^#]*pam_succeed_if\.so' /etc/pam.d/ 2>/dev/null)
+    ((hit)) || ok "No pam_succeed_if.so lines"
+
+    sub "Empty-password allowance (nullok / nullok_secure)"
+    hit=0
+    while IFS= read -r line; do hit=1; warn "nullok lets accounts with a blank password authenticate: $line"; done \
+        < <(grep -rEn '^[^#]*nullok' /etc/pam.d/ 2>/dev/null)
+    ((hit)) || ok "No nullok directives"
+
+    sub "pam_permit.so before pam_deny.so in auth stacks (always-succeed)"
+    hit=0
+    for f in /etc/pam.d/*-auth /etc/pam.d/system-auth /etc/pam.d/password-auth /etc/pam.d/common-auth /etc/pam.d/sshd /etc/pam.d/login; do
+        [[ -f $f ]] || continue
+        local deny permit
+        deny=$(grep -nE '^[^#]*pam_deny\.so' "$f" 2>/dev/null | head -n1 | cut -d: -f1)
+        permit=$(grep -nE '^[^#]*pam_permit\.so' "$f" 2>/dev/null | head -n1 | cut -d: -f1)
+        if [[ -n $permit && -n $deny ]] && ((permit < deny)); then
+            hit=1; alert "$f: pam_permit.so (line $permit) is reached before pam_deny.so (line $deny) - auth can always succeed"
+        fi
+    done
+    ((hit)) || ok "No permit-before-deny ordering found"
+
+    sub "PAM modules not owned by a package / with a changed checksum"
+    local -a pamso=()
+    while IFS= read -r f; do pamso+=("$f"); done < <(
+        find /lib /lib64 /lib32 /usr/lib /usr/lib64 /usr/lib32 -type f -name 'pam_*.so' 2>/dev/null)
+    if ((${#pamso[@]} == 0)); then
+        info "No pam_*.so modules found in the usual lib dirs"
+    else
+        mark_unowned "${pamso[@]}"
+        local bad=0
+        for f in "${pamso[@]}"; do
+            if [[ -n ${UNOWNED[$f]} ]]; then
+                bad=1; alert "PAM module not installed by any package: $f ($(fmeta "$f"))"
+            elif pkg_modified "$f"; then
+                bad=1; alert "PAM module CHECKSUM DIFFERS from its package (trojaned?): $f ($(fmeta "$f"))"
+            fi
+        done
+        ((bad)) || ok "All ${#pamso[@]} pam_*.so modules are package-owned and unmodified"
+    fi
+}
+
+# ============================================================================
 # Main
 # ============================================================================
 want procs     && run_procs
 want shell     && run_shell
 want cron      && run_cron
+want ssh       && run_ssh
+want pam       && run_pam
 want preload   && run_preload
 want kernel    && run_kernel
 want immutable && run_immutable

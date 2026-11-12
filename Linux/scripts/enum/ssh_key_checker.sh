@@ -1,156 +1,133 @@
 #!/bin/bash
 # NightWalk3r | Behnjamin Barlow | TTU CCDC
+#
+# ssh_key_checker.sh (enum) - DISPLAY ONLY. Shows every authorized_keys file and
+# the effective sshd configuration. It never changes anything on the host.
+#
+# To WIPE and lock attacker keys, use the hardening copy instead:
+#   Linux/scripts/harden/ssh_key_checker.sh   (supports WIPE_KEYS=1)
+#
+# Colour is only emitted to a real terminal, so coordinate's saved output files
+# stay free of raw escape codes.
 
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
-# Check if running as root
-if [[ $EUID -ne 0 ]]; then
-   echo -e "${RED}[!] This script must be run as root or with sudo${NC}" 
-   exit 1
+if [ -t 1 ]; then
+    RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; BLUE=$'\033[0;34m'; NC=$'\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
 fi
 
-wipe_and_lock() {
-    local file="$1"
-    if [ -n "$WIPE_KEYS" ]; then
-        echo -e "${RED}[!] WIPE_KEYS is set - Wiping and locking: $file${NC}"
-        echo '' > "$file"
-        chattr +i "$file" 2>/dev/null
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}[+] Successfully wiped and locked: $file${NC}"
-        else
-            echo -e "${YELLOW}[!] Wiped but could not set immutable flag (chattr may not be available): $file${NC}"
-        fi
+show_keys() {
+    # show_keys <authorized_keys file> <label>
+    local file="$1" label="$2" line n=0
+    echo "${BLUE}--- $label: $file ---${NC}"
+    if [ ! -f "$file" ]; then
+        echo "${YELLOW}[-] not present${NC}"
         echo ""
+        return
     fi
+    echo "${GREEN}[+] exists${NC} ($(stat -L -c '%U:%G %a' "$file" 2>/dev/null))"
+    while IFS= read -r line || [ -n "$line" ]; do
+        case $line in ''|\#*) continue ;; esac
+        n=$((n + 1))
+        echo "    [$n] $line"
+    done < "$file"
+    [ "$n" -eq 0 ] && echo "    (no active key lines)"
+    echo ""
 }
 
 check_root_keys() {
-    # Check root's authorized_keys
-    echo -e "${BLUE}--- Checking /root/.ssh/authorized_keys ---${NC}"
-    if [ -f "/root/.ssh/authorized_keys" ]; then
-        echo -e "${GREEN}[+] File exists: /root/.ssh/authorized_keys${NC}"
-        echo -e "${YELLOW}Contents:${NC}"
-        cat /root/.ssh/authorized_keys
-        echo ""
-        wipe_and_lock "/root/.ssh/authorized_keys"
-    else
-        echo -e "${RED}[-] File not found: /root/.ssh/authorized_keys${NC}"
-        echo ""
-    fi
+    show_keys "/root/.ssh/authorized_keys" "root"
+    show_keys "/root/.ssh/authorized_keys2" "root (authorized_keys2)"
 }
 
 check_user_keys() {
-    # Iterate through all user home directories
-    echo -e "${BLUE}--- Checking user home directories ---${NC}"
-
-    # Get all users with home directories
-    for user_home in /home/*; do
-        if [ -d "$user_home" ]; then
-            username=$(basename "$user_home")
-            auth_keys_file="$user_home/.ssh/authorized_keys"
-            
-            if [ -f "$auth_keys_file" ]; then
-                # Read file content safely
-                key_content=$(cat "$auth_keys_file")
-                echo -e "${GREEN}[+] File exists: $auth_keys_file:${NC}$key_content"
-                wipe_and_lock "$auth_keys_file"
-            else
-                echo -e "${RED}[-] File not found: $auth_keys_file${NC}"
-                echo ""
-            fi
-        fi
-    done
+    # Every home directory listed in /etc/passwd, not just /home/* - service
+    # accounts (www-data, postgres, ...) often have homes elsewhere.
+    echo "${BLUE}--- User authorized_keys (homes from /etc/passwd) ---${NC}"
+    echo ""
+    local user home seen=" /root "
+    while IFS=: read -r user _ _ _ _ home _; do
+        [ -n "$home" ] && [ -d "$home" ] || continue
+        case $seen in *" $home "*) continue ;; esac
+        seen="$seen$home "
+        show_keys "$home/.ssh/authorized_keys" "$user"
+        [ -f "$home/.ssh/authorized_keys2" ] && show_keys "$home/.ssh/authorized_keys2" "$user (authorized_keys2)"
+    done < /etc/passwd
 }
 
 check_unusual_keys() {
-    # Also check for any authorized_keys files in unusual locations
-    echo -e "${BLUE}--- Searching for authorized_keys in unusual locations ---${NC}"
-    find / -name "authorized_keys" -type f 2>/dev/null | while read -r file; do
-        # Skip the ones we already checked
-        if [[ ! "$file" =~ ^/root/.ssh/authorized_keys$ ]] && [[ ! "$file" =~ ^/home/[^/]+/.ssh/authorized_keys$ ]]; then
-            echo -e "${YELLOW}[!] Found authorized_keys in unusual location: $file${NC}"
-            echo -e "${YELLOW}Contents:${NC}"
-            cat "$file"
-            echo ""
-            wipe_and_lock "$file"
-        fi
+    # authorized_keys files anywhere else on disk (attacker drop points)
+    echo "${BLUE}--- Searching for authorized_keys in unusual locations ---${NC}"
+    find / -xdev \( -path /proc -o -path /sys \) -prune -o \
+        -type f -name 'authorized_keys*' -print 2>/dev/null | while IFS= read -r file; do
+        case $file in
+            /root/.ssh/authorized_keys|/root/.ssh/authorized_keys2) continue ;;
+            /home/*/.ssh/authorized_keys|/home/*/.ssh/authorized_keys2) continue ;;
+        esac
+        echo "${YELLOW}[!] authorized_keys in unusual location: $file${NC}"
+        show_keys "$file" "unusual"
     done
 }
 
 check_ssh_config() {
-    echo -e "${YELLOW}[*] Checking SSH configuration files...${NC}"
+    echo "${YELLOW}[*] SSH server configuration${NC}"
     echo ""
 
-    # Check main sshd_config
-    if [ -f /etc/ssh/sshd_config ]; then
-        echo -e "${BLUE}--- /etc/ssh/sshd_config ---${NC}"
-        echo -e "${GREEN}[+] File exists: /etc/ssh/sshd_config${NC}"
-        echo -e "${YELLOW}Active configuration (non-comment lines):${NC}"
+    # Effective, fully-resolved config - covers Include, Match, and defaults that
+    # a raw read of sshd_config misses. Needs sshd in PATH or a standard sbin dir.
+    local sshd
+    sshd=$(command -v sshd 2>/dev/null || { for d in /usr/sbin /sbin /usr/local/sbin; do [ -x "$d/sshd" ] && { echo "$d/sshd"; break; }; done; })
+    if [ -n "$sshd" ]; then
+        echo "${BLUE}--- Effective config ($sshd -T) ---${NC}"
         echo "=========================================="
-        # Ignore comments and empty lines
-        grep "^\s*[^#]" /etc/ssh/sshd_config
+        "$sshd" -T 2>/dev/null | grep -iE \
+            'permitrootlogin|passwordauthentication|pubkeyauthentication|authorizedkeysfile|authorizedkeyscommand|permitemptypasswords|allowusers|allowgroups|denyusers|denygroups|forcecommand|usepam|x11forwarding|permittunnel|gatewayports' \
+            || "$sshd" -T 2>/dev/null
         echo "=========================================="
         echo ""
     else
-        echo -e "${RED}[-] File not found: /etc/ssh/sshd_config${NC}"
+        echo "${YELLOW}[-] sshd binary not found - showing raw config files instead${NC}"
         echo ""
     fi
 
-    # Check sshd_config.d directory
+    # Raw files too, so you can see comments / commented-out directives
+    if [ -f /etc/ssh/sshd_config ]; then
+        echo "${BLUE}--- /etc/ssh/sshd_config (active lines) ---${NC}"
+        echo "=========================================="
+        grep -E '^[[:space:]]*[^#[:space:]]' /etc/ssh/sshd_config
+        echo "=========================================="
+        echo ""
+    fi
     if [ -d /etc/ssh/sshd_config.d ]; then
-        echo -e "${BLUE}--- /etc/ssh/sshd_config.d/ directory ---${NC}"
-        echo -e "${GREEN}[+] Directory exists: /etc/ssh/sshd_config.d${NC}"
-        echo ""
-        
         for file in /etc/ssh/sshd_config.d/*; do
-            if [ -f "$file" ]; then
-                echo -e "${YELLOW}Configuration file: $file${NC}"
-                echo "=========================================="
-                # Ignore comments and empty lines
-                grep "^\s*[^#]" "$file"
-                echo "=========================================="
-                echo ""
-            fi
+            [ -f "$file" ] || continue
+            echo "${BLUE}--- $file (active lines) ---${NC}"
+            echo "=========================================="
+            grep -E '^[[:space:]]*[^#[:space:]]' "$file"
+            echo "=========================================="
+            echo ""
         done
-    else
-        echo -e "${RED}[-] Directory not found: /etc/ssh/sshd_config.d${NC}"
-        echo ""
     fi
 }
 
 MAIN() {
-    echo -e "${BLUE}========================================${NC}"
-    echo -e "${BLUE}  SSH Enumeration Script${NC}"
-    echo -e "${BLUE}========================================${NC}"
+    echo "${BLUE}========================================${NC}"
+    echo "${BLUE}  SSH Key & Config Enumeration (display only)${NC}"
+    echo "${BLUE}========================================${NC}"
     echo ""
-
-    echo -e "${GREEN}[+] Starting enumeration...${NC}"
-    if [ -n "$WIPE_KEYS" ]; then
-        echo -e "${RED}[!] WARNING: WIPE_KEYS is set - All found authorized_keys files will be wiped and locked!${NC}"
+    if [[ $EUID -ne 0 ]]; then
+        echo "${YELLOW}[!] Not root - some homes and the sshd -T dump may be unreadable (coordinate: add -S)${NC}"
+        echo ""
     fi
-    echo ""
 
-    # Run Checks
     check_root_keys
     check_user_keys
     check_unusual_keys
-    
-    echo -e "${GREEN}[+] SSH authorized_keys enumeration complete${NC}"
-    echo ""
-
     check_ssh_config
 
-    echo -e "${GREEN}[+] SSH configuration enumeration complete${NC}"
-    echo ""
-
-    echo -e "${BLUE}========================================${NC}"
-    echo -e "${BLUE}  Enumeration Complete${NC}"
-    echo -e "${BLUE}========================================${NC}"
+    echo "${BLUE}========================================${NC}"
+    echo "${BLUE}  Enumeration Complete${NC}"
+    echo "${BLUE}========================================${NC}"
 }
 
 MAIN

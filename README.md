@@ -271,10 +271,13 @@ coordinate -t 192.168.1.5 -u root -p 'secret' -o '%h%/%s%.txt' -x 'uname -a'
 [`Linux/scripts/enum/basic-persistence-checker.sh`](Linux/scripts/enum/basic-persistence-checker.sh)
 sweeps a host for common persistence and rootkits in one pass. It covers shell
 rc/profile backdoors (malicious `alias`, function hijacks, `declare -f`), cron,
-`at`, systemd units, boot and login hooks, LD_PRELOAD and LKM rootkits, hidden
-processes and modules, immutable (`chattr +i`) files, SUID/SGID binaries and
-capabilities, and processes running from deleted, memfd, or `/tmp` binaries.
-It is **read-only**: it never changes anything on the host.
+`at`, systemd units, boot and login hooks, SSH `authorized_keys` (every home plus
+odd locations) and `sshd` config, PAM backdoors (`pam_exec`, `pam_succeed_if`,
+`nullok`, deny/permit ordering, unowned or modified modules), LD_PRELOAD and LKM
+rootkits, hidden processes and modules, immutable (`chattr +i`) files, SUID/SGID
+binaries and capabilities, and processes running from deleted, memfd, or `/tmp`
+binaries. It is **read-only**: it never changes anything on the host (use
+`Linux/scripts/harden/ssh_key_checker.sh` to actually remove keys).
 
 It needs root (`-S`, or log in as root), and a full scan can take a few
 minutes, so raise the default 30 s timeout with `-T`:
@@ -296,15 +299,15 @@ variables set with `-E` (or `env.json`):
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `PC_SECTIONS` | all | Comma list of `procs,shell,cron,preload,kernel,immutable,suid` |
+| `PC_SECTIONS` | all | Comma list of `procs,shell,cron,ssh,pam,preload,kernel,immutable,suid` |
 | `PC_QUIET` | `1` when not a terminal | `0` also prints `[INFO]`/`[OK]` lines (every alias, cron entry, unit, ...) |
 | `PC_COLOR` | `0` when not a terminal | `1` forces ANSI colour |
 | `PC_MAX_LINES` | `3000` | After this many lines only `[ALERT]` lines print, keeping output under coordinate's 1 MiB limit. `0` = no limit |
 
 ```sh
-# Fast first pass (seconds): processes, shell rc files, scheduled tasks
+# Fast first pass (seconds): processes, shell rc files, cron, ssh keys, PAM
 coordinate -t 10.10.1.0/24 -u admin -p 'pass' -S -T 120 \
-  -E PC_SECTIONS=procs,shell,cron -o '%h%/%s%.txt' \
+  -E PC_SECTIONS=procs,shell,cron,ssh,pam -o '%h%/%s%.txt' \
   Linux/scripts/enum/basic-persistence-checker.sh
 
 # Rootkit-focused pass with full detail
