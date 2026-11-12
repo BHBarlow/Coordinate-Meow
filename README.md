@@ -266,6 +266,58 @@ Save command output by host and command:
 coordinate -t 192.168.1.5 -u root -p 'secret' -o '%h%/%s%.txt' -x 'uname -a'
 ```
 
+## Threat hunting: persistence checker
+
+[`Linux/scripts/enum/basic-persistence-checker.sh`](Linux/scripts/enum/basic-persistence-checker.sh)
+sweeps a host for common persistence and rootkits in one pass. It covers shell
+rc/profile backdoors (malicious `alias`, function hijacks, `declare -f`), cron,
+`at`, systemd units, boot and login hooks, LD_PRELOAD and LKM rootkits, hidden
+processes and modules, immutable (`chattr +i`) files, SUID/SGID binaries and
+capabilities, and processes running from deleted, memfd, or `/tmp` binaries.
+It is **read-only**: it never changes anything on the host.
+
+It needs root (`-S`, or log in as root), and a full scan can take a few
+minutes, so raise the default 30 s timeout with `-T`:
+
+```sh
+# Full sweep, one output file per host
+coordinate -t 10.10.1.0/24 -u admin -p 'pass' -S -T 600 \
+  -o '%h%/%s%.txt' Linux/scripts/enum/basic-persistence-checker.sh
+
+# One line per host: alert/warn counts
+grep -h PERSIST-SUMMARY output/*/*
+
+# Every ALERT across the fleet
+grep -r '\[ALERT\]' output/
+```
+
+The coordinator can't pass arguments to scripts, so options are environment
+variables set with `-E` (or `env.json`):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PC_SECTIONS` | all | Comma list of `procs,shell,cron,preload,kernel,immutable,suid` |
+| `PC_QUIET` | `1` when not a terminal | `0` also prints `[INFO]`/`[OK]` lines (every alias, cron entry, unit, ...) |
+| `PC_COLOR` | `0` when not a terminal | `1` forces ANSI colour |
+| `PC_MAX_LINES` | `3000` | After this many lines only `[ALERT]` lines print, keeping output under coordinate's 1 MiB limit. `0` = no limit |
+
+```sh
+# Fast first pass (seconds): processes, shell rc files, scheduled tasks
+coordinate -t 10.10.1.0/24 -u admin -p 'pass' -S -T 120 \
+  -E PC_SECTIONS=procs,shell,cron -o '%h%/%s%.txt' \
+  Linux/scripts/enum/basic-persistence-checker.sh
+
+# Rootkit-focused pass with full detail
+coordinate -t 10.10.1.5 -u root -p 'pass' -T 600 \
+  -E PC_SECTIONS=preload,kernel -E PC_QUIET=0 \
+  Linux/scripts/enum/basic-persistence-checker.sh
+```
+
+Run locally the same way: `sudo ./basic-persistence-checker.sh` (`-h` for
+flags, `-s` to pick sections, `-q`/`-v` for quiet or verbose). The `preload`
+checks work best when a static `busybox` is on the host, because it can't be
+hooked by LD_PRELOAD.
+
 ## Files
 
 - `config.json`: optional credential store used by `--use-config`.
